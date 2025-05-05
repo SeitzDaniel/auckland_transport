@@ -1,0 +1,8 @@
+{
+  "name": "Auckland Transport",
+  "content_in_root": false,
+  "domain": "auckland_transport",
+  "zip_release": false,
+  "filename": "auckland_transport",
+  "render_readme": true
+}
