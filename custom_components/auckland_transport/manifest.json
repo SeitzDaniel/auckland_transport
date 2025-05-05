@@ -1,0 +1,11 @@
+{
+  "domain": "auckland_transport",
+  "name": "Auckland Transport",
+  "codeowners": ["@SeitzDaniel"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/SeitzDaniel/auckland_transport",
+  "iot_class": "cloud_polling",
+  "requirements": ["aiohttp"],
+  "version": "v0.2.0"
+}
