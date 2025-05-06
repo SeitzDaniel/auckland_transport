@@ -257,7 +257,7 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
         arrivals = data.get("arrivals", [])
         
         if arrivals:
-            attrs["next_departures_count"] = len(arrivals)
+            attrs["total_departures_for_today"] = len(arrivals)
             
             # Add numbered departures as attributes
             for idx, arrival in enumerate(arrivals, 1):
@@ -271,6 +271,6 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
                 if idx >= 4:
                     break
         else:
-            attrs["next_departures_count"] = 0
+            attrs["total_departures_for_today"] = 0
         
         return attrs
