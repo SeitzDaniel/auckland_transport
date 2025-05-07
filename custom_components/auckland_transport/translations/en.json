@@ -1,0 +1,46 @@
+{
+    "config": {
+      "step": {
+        "user": {
+          "title": "Auckland Transport",
+          "description": "If you don't already have an API key, you can get one from here https://dev-portal.at.govt.nz/signup.",
+          "data": {
+            "api_key": "API Key"
+          }
+        },
+        "stop_type_selection": {
+          "title": "Stop Type",
+          "description": "Filters stops by type.",
+          "data": {
+            "stop_type": "Stop Type"
+          }
+        },
+        "stop_selection": {
+          "title": "Select Transport Stop",
+          "description": "Found {stop_count} {stop_type} stops. Select from below.",
+          "data": {
+            "stop_id": "Transport Stop"
+          }
+        }
+      },
+      "error": {
+        "invalid_auth": "Invalid API key",
+        "cannot_connect": "Failed to connect to Auckland Transport API",
+        "unknown": "Unexpected error"
+      },
+      "abort": {
+        "already_configured": "This stop is already configured. Choose a diffrent one."
+      }
+    },
+    "options": {
+      "step": {
+        "init": {
+          "title": "Auckland Transport Options",
+          "description": "Lower values provide more frequent updates but will increase API usage. Please refer to the Auckland Transport API documentation for usage guidelines.",
+          "data": {
+            "update_interval": "Update interval (seconds)"
+          }
+        }
+      }
+    }
+  }
