@@ -22,6 +22,12 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR]
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the Auckland Transport component."""
+    # Home Assistant handles translations automatically
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Auckland Transport from a config entry."""
     api_key = entry.data[CONF_API_KEY]
@@ -36,7 +42,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
+    # Set up options update listener
+    entry.async_on_unload(entry.add_update_listener(update_listener))
+    
     return True
+
+
+async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -115,7 +129,6 @@ class AucklandTransportDataUpdateCoordinator(DataUpdateCoordinator):
                 continue
                 
             # Filter based on stop code pattern
-            # Not 100% correct need to find something else what determins the stop type
             code_length = len(stop_code)
             
             if stop_type == "train" and code_length == 3:
