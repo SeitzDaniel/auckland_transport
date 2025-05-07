@@ -2,7 +2,6 @@
 from typing import Final
 
 DOMAIN: Final = "auckland_transport"
-
 CONF_API_KEY: Final = "api_key"
 CONF_STOP_ID: Final = "stop_id"
 CONF_STOP_TYPE: Final = "stop_type"
@@ -12,18 +11,17 @@ STOP_TYPE_ALL: Final = "all"
 STOP_TYPE_TRAIN: Final = "train"
 STOP_TYPE_BUS: Final = "bus"
 STOP_TYPE_FERRY: Final = "ferry"
-
 STOP_TYPES: Final = [STOP_TYPE_ALL, STOP_TYPE_TRAIN, STOP_TYPE_BUS, STOP_TYPE_FERRY]
 
 # API endpoints
 API_BASE_URL: Final = "https://api.at.govt.nz/gtfs/v3"
 API_STOPS_ENDPOINT: Final = f"{API_BASE_URL}/stops"
 
-# Default update interval in seconds (5 minutes)
-DEFAULT_SCAN_INTERVAL: Final = 300
+# Default update interval in seconds (60 seconds)
+DEFAULT_SCAN_INTERVAL: Final = 60
 
-# Data update coordinator update interval
-UPDATE_INTERVAL: Final = 60
+# Data update coordinator update interval for general data (5 minutes)
+UPDATE_INTERVAL: Final = 300
 
 # Service attributes
 ATTR_STOP_NAME: Final = "stop_name"
