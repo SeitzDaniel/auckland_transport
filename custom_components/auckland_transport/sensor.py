@@ -42,6 +42,9 @@ async def async_setup_entry(
     api_key = entry.data[CONF_API_KEY]
     stop_id = entry.data[CONF_STOP_ID]
     
+    # Get update interval from options or use default
+    update_interval = entry.options.get("update_interval", DEFAULT_SCAN_INTERVAL)
+    
     # Find stop details in coordinator data
     stop_data = None
     
@@ -54,11 +57,12 @@ async def async_setup_entry(
         _LOGGER.error("Could not find stop data for stop_id: %s", stop_id)
         return
     
-    # Create real-time data coordinator
+    # Create real-time data coordinator with configured update interval
     realtime_coordinator = RealtimeDataCoordinator(
         hass, 
         api_key, 
-        stop_id
+        stop_id,
+        update_interval
     )
     
     # Initial data fetch - force immediate refresh
@@ -71,13 +75,13 @@ async def async_setup_entry(
 class RealtimeDataCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Auckland Transport real-time data."""
 
-    def __init__(self, hass: HomeAssistant, api_key: str, stop_id: str):
+    def __init__(self, hass: HomeAssistant, api_key: str, stop_id: str, update_interval: int = 60):
         """Initialize the data coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{stop_id}_realtime",
-            update_interval=timedelta(seconds=30),  # Update every 30 seconds
+            update_interval=timedelta(seconds=update_interval),
         )
         self._api_key = api_key
         self._stop_id = stop_id
