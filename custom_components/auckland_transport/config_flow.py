@@ -13,6 +13,7 @@ from .const import (
     API_STOPS_ENDPOINT,
     CONF_STOP_ID,
     CONF_STOP_TYPE,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     STOP_TYPES,
     STOP_TYPE_ALL,
@@ -103,7 +104,6 @@ class AucklandTransportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             combined_stop_name=stop_options[stop_id]
             return self.async_create_entry(
                 title=f"AT Stop - {combined_stop_name}",
-                #title=f"Auckland Transport Stop {stop_id}",
                 data=self._data,
             )
 
@@ -160,25 +160,32 @@ class AucklandTransportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return stops_by_type
 
+    @staticmethod
     @callback
-    def async_get_options_flow(self, config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
+        """Get the options flow for this handler."""
         return AucklandTransportOptionsFlow(config_entry)
 
 
 class AucklandTransportOptionsFlow(config_entries.OptionsFlow):
+    """Handle Auckland Transport options."""
+
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
         self.config_entry = config_entry
 
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
+        """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    "scan_interval",
-                    default=self.config_entry.options.get("scan_interval", 300),
-                ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
-            }),
-        )
+        options = self.config_entry.options
+        
+        schema = vol.Schema({
+            vol.Optional(
+                "update_interval",
+                default=options.get("update_interval", DEFAULT_SCAN_INTERVAL),
+            ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+        })
+
+        return self.async_show_form(step_id="init", data_schema=schema)
