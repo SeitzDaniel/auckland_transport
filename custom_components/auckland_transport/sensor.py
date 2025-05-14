@@ -114,18 +114,23 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                     if response.status == 200:
                         result = await response.json()
                         
-                        # First pass to get all trips
+                        # Extract all trips
                         all_trips = self._extract_trips(result)
                         
-                        # Fetch realtime details for all trips
-                        for trip in all_trips:
-                            trip_id = trip.get("trip_id")
-                            if trip_id:
-                                realtime_details = await self._fetch_realtime_trip_details(session, trip_id)
-                                if realtime_details:
-                                    trip.update(realtime_details)
+                        # Extract all trip IDs for batch processing
+                        trip_ids = [trip.get("trip_id") for trip in all_trips if trip.get("trip_id")]
                         
-                        # Second pass to filter and process with delay information
+                        # Fetch realtime details for all trips in one batch call
+                        if trip_ids:
+                            realtime_details_batch = await self._fetch_realtime_trip_details_batch(session, trip_ids)
+                            
+                            # Update each trip with its realtime details
+                            for trip in all_trips:
+                                trip_id = trip.get("trip_id")
+                                if trip_id and trip_id in realtime_details_batch:
+                                    trip.update(realtime_details_batch[trip_id])
+                        
+                        # Process trips with delay information
                         processed_data = self._process_trips_with_delay(all_trips)
                         
                         return processed_data
@@ -163,11 +168,14 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         
         return trips
     
-    async def _fetch_realtime_trip_details(self, session, trip_id):
-        """Fetch additional real-time details for a specific trip."""
+    async def _fetch_realtime_trip_details_batch(self, session, trip_ids):
+        """Fetch additional real-time details for multiple trips in one batch request."""
         api_endpoint = "https://api.at.govt.nz/realtime/legacy/tripupdates"
-        params = {"tripid": trip_id}
+        # Join multiple trip IDs with comma
+        params = {"tripid": ",".join(trip_ids)}
         headers = {"Cache-Control": "no-cache", "Ocp-Apim-Subscription-Key": self._api_key}
+        
+        results = {}
         
         try:
             async with session.get(api_endpoint, params=params, headers=headers) as response:
@@ -177,7 +185,8 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                     if result.get("status") == "OK" and "response" in result:
                         entities = result["response"].get("entity", [])
                         for entity in entities:
-                            if entity.get("id") == trip_id and "trip_update" in entity:
+                            trip_id = entity.get("id")
+                            if trip_id and "trip_update" in entity:
                                 trip_update = entity["trip_update"]
                                 
                                 # Extract license plate
@@ -192,20 +201,20 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                                 elif "stop_time_update" in trip_update and "arrival" in trip_update["stop_time_update"]:
                                     delay_seconds = trip_update["stop_time_update"]["arrival"].get("delay")
                                 
-                                return {
+                                results[trip_id] = {
                                     "license_plate": license_plate,
                                     "delay_seconds": delay_seconds
                                 }
                 else:
                     _LOGGER.error(
-                        "Error fetching real-time trip details: %s (%s)",
+                        "Error fetching batch real-time trip details: %s (%s)",
                         response.status,
                         await response.text(),
                     )
         except Exception as err:
-            _LOGGER.error("Error fetching real-time trip details: %s", err)
+            _LOGGER.error("Error fetching batch real-time trip details: %s", err)
         
-        return None
+        return results
     
     def _process_trips_with_delay(self, trips):
         """Process trips considering delay information."""
@@ -225,10 +234,26 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
             # Parse the scheduled time
             try:
                 hour, minute, second = map(int, scheduled_departure_time.split(':'))
-                scheduled_dt = datetime(
-                    now.year, now.month, now.day, 
-                    hour, minute, second
-                )
+                
+                # FIX: Handle 24-hour time format correctly
+                if hour == 24:  # If hour is 24 (midnight), convert to 0
+                    hour = 0
+                elif hour > 24:  # If hour is >24 (next day), handle as next day
+                    # Calculate days to add
+                    days_to_add = hour // 24
+                    # Get the remaining hour
+                    hour = hour % 24
+                    # Create the base datetime and add days
+                    scheduled_dt = datetime(
+                        now.year, now.month, now.day, 
+                        hour, minute, second
+                    ) + timedelta(days=days_to_add)
+                else:
+                    # Normal case (0-23 hours)
+                    scheduled_dt = datetime(
+                        now.year, now.month, now.day, 
+                        hour, minute, second
+                    )
                 
                 # Calculate actual departure time with delay
                 delay_seconds = trip.get("delay_seconds", 0) or 0
