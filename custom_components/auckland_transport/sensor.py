@@ -113,15 +113,20 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                 async with session.get(api_endpoint, params=params, headers=headers) as response:
                     if response.status == 200:
                         result = await response.json()
-                        processed_data = self._process_response(result)
-
-                        # If we have arrivals, fetch additional details for the first one
-                        if processed_data["arrivals"] and processed_data["next_departure"]:
-                            trip_id = processed_data["next_departure"].get("trip_id")
+                        
+                        # First pass to get all trips
+                        all_trips = self._extract_trips(result)
+                        
+                        # Fetch realtime details for all trips
+                        for trip in all_trips:
+                            trip_id = trip.get("trip_id")
                             if trip_id:
                                 realtime_details = await self._fetch_realtime_trip_details(session, trip_id)
                                 if realtime_details:
-                                    processed_data["next_departure"].update(realtime_details)
+                                    trip.update(realtime_details)
+                        
+                        # Second pass to filter and process with delay information
+                        processed_data = self._process_trips_with_delay(all_trips)
                         
                         return processed_data
                     else:
@@ -134,6 +139,29 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error("Error fetching real-time data: %s", err)
             return {"arrivals": [], "next_departure": None}
+    
+    def _extract_trips(self, response_data):
+        """Extract trip data from API response."""
+        trips = []
+        
+        if "data" not in response_data:
+            return trips
+        
+        for trip in response_data["data"]:
+            attributes = trip.get("attributes", {})
+            
+            trip_data = {
+                "arrival_time": attributes.get("arrival_time"),
+                "scheduled_departure_time": attributes.get("departure_time"),
+                "trip_headsign": attributes.get("trip_headsign"),
+                "stop_headsign": attributes.get("stop_headsign"),
+                "route_id": attributes.get("route_id"),
+                "trip_id": attributes.get("trip_id"),
+            }
+            
+            trips.append(trip_data)
+        
+        return trips
     
     async def _fetch_realtime_trip_details(self, session, trip_id):
         """Fetch additional real-time details for a specific trip."""
@@ -179,46 +207,52 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         
         return None
     
-    def _process_response(self, response_data):
-        """Process the response data and filter out past trips."""
+    def _process_trips_with_delay(self, trips):
+        """Process trips considering delay information."""
         arrivals = []
         next_departure = None
         
-        if "data" not in response_data:
-            return {"arrivals": [], "next_departure": None}
-        
         # Get current time for filtering
         now = datetime.now()
-        current_time_str = now.strftime("%H:%M:%S")
         
         # Filter and process trips
-        for idx, trip in enumerate(response_data["data"]):
-            attributes = trip.get("attributes", {})
+        for trip in trips:
+            scheduled_departure_time = trip.get("scheduled_departure_time")
             
-            # Extract departure time
-            departure_time = attributes.get("departure_time")
-            
-            # Skip trips in the past
-            if departure_time and departure_time < current_time_str:
+            if not scheduled_departure_time:
                 continue
             
-            trip_data = {
-                "arrival_time": attributes.get("arrival_time"),
-                "scheduled_departure_time": departure_time,  # Renamed from departure_time to scheduled_departure_time
-                "trip_headsign": attributes.get("trip_headsign"),
-                "stop_headsign": attributes.get("stop_headsign"),
-                "route_id": attributes.get("route_id"),
-                "trip_id": attributes.get("trip_id"),
-            }
-            
-            arrivals.append(trip_data)
-            
-            # Set the first valid trip as next_departure
-            if next_departure is None:
-                next_departure = trip_data
+            # Parse the scheduled time
+            try:
+                hour, minute, second = map(int, scheduled_departure_time.split(':'))
+                scheduled_dt = datetime(
+                    now.year, now.month, now.day, 
+                    hour, minute, second
+                )
+                
+                # Calculate actual departure time with delay
+                delay_seconds = trip.get("delay_seconds", 0) or 0
+                actual_dt = scheduled_dt + timedelta(seconds=delay_seconds)
+                
+                # Format the actual departure time
+                trip["actual_departure_time"] = actual_dt.strftime("%H:%M:%S")
+                
+                # Skip trips that have already departed (considering delay)
+                if actual_dt < now:
+                    continue
+                
+                arrivals.append(trip)
+            except Exception as e:
+                _LOGGER.error("Error calculating actual departure time: %s", e)
+                # If we can't parse the time, still include the trip
+                arrivals.append(trip)
         
-        # Sort arrivals by departure time
-        arrivals.sort(key=lambda x: x["scheduled_departure_time"] if x["scheduled_departure_time"] else "")
+        # Sort arrivals by actual departure time
+        arrivals.sort(key=lambda x: x.get("actual_departure_time", x.get("scheduled_departure_time", "")))
+        
+        # Set the first valid trip as next_departure
+        if arrivals:
+            next_departure = arrivals[0]
         
         return {
             "arrivals": arrivals,
@@ -247,7 +281,8 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
         data = self._realtime_coordinator.data if self._realtime_coordinator.data else {}
         next_departure = data.get("next_departure")
         if next_departure:
-            self._attr_native_value = next_departure.get("scheduled_departure_time", "Unknown")
+            # Use actual departure time if available, otherwise use scheduled
+            self._attr_native_value = next_departure.get("actual_departure_time") or next_departure.get("scheduled_departure_time", "Unknown")
         else:
             self._attr_native_value = "No upcoming departures"
         
@@ -290,38 +325,8 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
         
         next_departure = data.get("next_departure")
         if next_departure:
-            # Calculate actual departure time if we have delay information
-            scheduled_time = next_departure.get("scheduled_departure_time", "Unknown")
-            delay_seconds = next_departure.get("delay_seconds")
-            
-            if scheduled_time != "Unknown" and delay_seconds is not None:
-                # Use the scheduled time as the native value if no delay
-                if delay_seconds == 0:
-                    self._attr_native_value = scheduled_time
-                else:
-                    # Try to calculate actual departure time with delay
-                    try:
-                        # Parse the scheduled time
-                        hour, minute, second = map(int, scheduled_time.split(':'))
-                        
-                        # Create a datetime object for today with this time
-                        now = datetime.now()
-                        scheduled_dt = datetime(
-                            now.year, now.month, now.day, 
-                            hour, minute, second
-                        )
-                        
-                        # Add the delay
-                        actual_dt = scheduled_dt + timedelta(seconds=delay_seconds)
-                        
-                        # Format the actual departure time
-                        self._attr_native_value = actual_dt.strftime("%H:%M:%S")
-                    except Exception as e:
-                        _LOGGER.error("Error calculating actual departure time: %s", e)
-                        self._attr_native_value = scheduled_time
-            else:
-                # If no delay info available, use scheduled time
-                self._attr_native_value = scheduled_time
+            # Use actual departure time (which already includes delay) if available
+            self._attr_native_value = next_departure.get("actual_departure_time") or next_departure.get("scheduled_departure_time", "Unknown")
         else:
             self._attr_native_value = "No upcoming departures"
         
@@ -353,45 +358,19 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
             for idx, arrival in enumerate(arrivals, 1):
                 prefix = f"departure_{idx}"
                 
-                # For the first departure, include additional information
-                if idx == 1:
-                    attrs[f"{prefix}_scheduled_time"] = arrival.get("scheduled_departure_time")
-                    
-                    # Add delay information if available
-                    delay_seconds = arrival.get("delay_seconds")
-                    if delay_seconds is not None:
-                        attrs[f"{prefix}_delay_in_seconds"] = delay_seconds
-                        
-                        # Calculate and add actual departure time with delay
-                        scheduled_time = arrival.get("scheduled_departure_time")
-                        if scheduled_time:
-                            try:
-                                # Parse the scheduled time
-                                hour, minute, second = map(int, scheduled_time.split(':'))
-                                
-                                # Create a datetime object for today with this time
-                                now = datetime.now()
-                                scheduled_dt = datetime(
-                                    now.year, now.month, now.day, 
-                                    hour, minute, second
-                                )
-                                
-                                # Add the delay
-                                actual_dt = scheduled_dt + timedelta(seconds=delay_seconds)
-                                
-                                # Format the actual departure time
-                                attrs[f"{prefix}_actual_time"] = actual_dt.strftime("%H:%M:%S")
-                            except Exception as e:
-                                _LOGGER.error("Error calculating actual departure time: %s", e)
-                    
-                    # Add license plate if available
-                    license_plate = arrival.get("license_plate")
-                    if license_plate:
-                        attrs[f"{prefix}_license_plate"] = license_plate
-
-                else:
-                    # For other departures, just include basic information
-                    attrs[f"{prefix}_scheduled_time"] = arrival.get("scheduled_departure_time")
+                # Include scheduled and actual times
+                attrs[f"{prefix}_scheduled_time"] = arrival.get("scheduled_departure_time")
+                attrs[f"{prefix}_actual_time"] = arrival.get("actual_departure_time", arrival.get("scheduled_departure_time"))
+                
+                # Add delay information if available
+                delay_seconds = arrival.get("delay_seconds")
+                if delay_seconds is not None:
+                    attrs[f"{prefix}_delay_in_seconds"] = delay_seconds
+                
+                # Add license plate if available
+                license_plate = arrival.get("license_plate")
+                if license_plate:
+                    attrs[f"{prefix}_license_plate"] = license_plate
                 
                 attrs[f"{prefix}_headsign"] = arrival.get("trip_headsign")
                 attrs[f"{prefix}_route"] = arrival.get("route_id")
