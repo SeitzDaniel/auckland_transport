@@ -36,9 +36,11 @@
       "step": {
         "init": {
           "title": "Auckland Transport Options",
-          "description": "Lower values provide more frequent updates but will increase API usage. Please refer to the Auckland Transport API documentation for usage guidelines.",
+          "description": "Setting a lower update interval value will result in more frequent updates but may increase API usage. Please consult the Auckland Transport API documentation for detailed usage guidelines. Additionally, you can reduce unnecessary API calls by disabling updates during periods when no trips are likely scheduled.",
           "data": {
-            "update_interval": "Update interval (seconds)"
+            "update_interval": "Update interval (seconds)",
+            "disable_updates_start": "Disable API Calls From",
+            "disable_updates_end": "Disable API Calls To"
           }
         }
       }
