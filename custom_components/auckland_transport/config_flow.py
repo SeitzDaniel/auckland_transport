@@ -8,11 +8,16 @@ from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers import selector
 
 from .const import (
     API_STOPS_ENDPOINT,
+    CONF_DISABLE_UPDATES_END,
+    CONF_DISABLE_UPDATES_START,
     CONF_STOP_ID,
     CONF_STOP_TYPE,
+    DEFAULT_DISABLE_UPDATES_END,
+    DEFAULT_DISABLE_UPDATES_START,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     STOP_TYPES,
@@ -187,6 +192,14 @@ class AucklandTransportOptionsFlow(config_entries.OptionsFlow):
                 "update_interval",
                 default=options.get("update_interval", DEFAULT_SCAN_INTERVAL),
             ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+            vol.Optional(
+                CONF_DISABLE_UPDATES_START,
+                default=options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START),
+            ): selector.TimeSelector(),
+            vol.Optional(
+                CONF_DISABLE_UPDATES_END,
+                default=options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END),
+            ): selector.TimeSelector(),
         })
 
         return self.async_show_form(step_id="init", data_schema=schema)
