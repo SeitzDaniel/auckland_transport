@@ -1,6 +1,6 @@
 """Support for Auckland Transport sensors."""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import pytz
 from typing import Any, Dict, Optional, List
 
@@ -23,7 +23,11 @@ from .const import (
     ATTR_STOP_LON,
     ATTR_STOP_NAME,
     ATTR_WHEELCHAIR_BOARDING,
+    CONF_DISABLE_UPDATES_END,
+    CONF_DISABLE_UPDATES_START,
     CONF_STOP_ID,
+    DEFAULT_DISABLE_UPDATES_END,
+    DEFAULT_DISABLE_UPDATES_START,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     UPDATE_INTERVAL,
@@ -45,6 +49,12 @@ async def async_setup_entry(
     # Get update interval from options or use default
     update_interval = entry.options.get("update_interval", DEFAULT_SCAN_INTERVAL)
     
+    # Get disable period from options or use defaults
+    disable_updates_start = entry.options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START)
+    disable_updates_end = entry.options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END)
+    
+    _LOGGER.debug("Configured disable period: %s to %s", disable_updates_start, disable_updates_end)
+    
     # Find stop details in coordinator data
     stop_data = None
     
@@ -62,7 +72,9 @@ async def async_setup_entry(
         hass, 
         api_key, 
         stop_id,
-        update_interval
+        update_interval,
+        disable_updates_start,
+        disable_updates_end
     )
     
     # Initial data fetch - force immediate refresh
@@ -75,7 +87,15 @@ async def async_setup_entry(
 class RealtimeDataCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Auckland Transport real-time data."""
 
-    def __init__(self, hass: HomeAssistant, api_key: str, stop_id: str, update_interval: int = 60):
+    def __init__(
+        self, 
+        hass: HomeAssistant, 
+        api_key: str, 
+        stop_id: str, 
+        update_interval: int = 60,
+        disable_updates_start: str = DEFAULT_DISABLE_UPDATES_START,
+        disable_updates_end: str = DEFAULT_DISABLE_UPDATES_END
+    ):
         """Initialize the data coordinator."""
         super().__init__(
             hass,
@@ -86,9 +106,93 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         self._api_key = api_key
         self._stop_id = stop_id
         self.data = {"arrivals": [], "next_departure": None}
+        
+        # Parse disable period times
+        try:
+            self._disable_updates_start = self._parse_time_string(disable_updates_start)
+            self._disable_updates_end = self._parse_time_string(disable_updates_end)
+        except ValueError:
+            _LOGGER.error(
+                "Invalid time format for disable updates period. Using defaults instead."
+            )
+            self._disable_updates_start = self._parse_time_string(DEFAULT_DISABLE_UPDATES_START)
+            self._disable_updates_end = self._parse_time_string(DEFAULT_DISABLE_UPDATES_END)
+
+    def _parse_time_string(self, time_str: str) -> time:
+        """Parse time string in various formats to time object."""
+        _LOGGER.debug("Parsing time string: %s", time_str)
+        
+        # Handle HA's time selector format which can contain seconds
+        if ":" in time_str:
+            parts = time_str.split(":")
+            if len(parts) > 2:
+                # Format with seconds (HH:MM:SS)
+                time_str = ":".join(parts[0:2])  # Just keep hours and minutes
+        
+        try:
+            # First try 24-hour format (HH:MM)
+            result = datetime.strptime(time_str, "%H:%M").time()
+            _LOGGER.debug("Parsed time as 24-hour format: %s", result.strftime("%H:%M"))
+            return result
+        except ValueError:
+            try:
+                # Check if there's an AM/PM indicator
+                if " " in time_str and ("AM" in time_str.upper() or "PM" in time_str.upper()):
+                    result = datetime.strptime(time_str, "%I:%M %p").time()
+                    _LOGGER.debug("Parsed time as 12-hour format: %s (24h: %s)", 
+                                time_str, result.strftime("%H:%M"))
+                    return result
+                else:
+                    # Try military time without colon (e.g. "1300")
+                    if time_str.isdigit() and len(time_str) == 4:
+                        hours = int(time_str[:2])
+                        minutes = int(time_str[2:])
+                        result = time(hour=hours, minute=minutes)
+                        _LOGGER.debug("Parsed time as military format: %s", result.strftime("%H:%M"))
+                        return result
+                    raise ValueError(f"Unrecognized time format: {time_str}")
+            except Exception as e:
+                _LOGGER.error("Failed to parse time string: %s - %s", time_str, str(e))
+                # Fall back to default values
+                raise ValueError(f"Could not parse time format: {time_str}")
+        
+    def _is_update_disabled(self) -> bool:
+        """Check if updates should be disabled based on current time."""
+        current_time = datetime.now().time()
+        
+        # Handle case when disable period spans midnight
+        if self._disable_updates_start > self._disable_updates_end:
+            is_disabled = current_time >= self._disable_updates_start or current_time < self._disable_updates_end
+            _LOGGER.debug(
+                "Checking disabled status (overnight period): current=%s, start=%s, end=%s, disabled=%s",
+                current_time.strftime("%H:%M"),
+                self._disable_updates_start.strftime("%H:%M"),
+                self._disable_updates_end.strftime("%H:%M"),
+                is_disabled
+            )
+            return is_disabled
+        
+        # Normal case
+        is_disabled = self._disable_updates_start <= current_time < self._disable_updates_end
+        _LOGGER.debug(
+            "Checking disabled status: current=%s, start=%s, end=%s, disabled=%s",
+            current_time.strftime("%H:%M"),
+            self._disable_updates_start.strftime("%H:%M"),
+            self._disable_updates_end.strftime("%H:%M"),
+            is_disabled
+        )
+        return is_disabled
 
     async def _async_update_data(self):
         """Fetch data from Auckland Transport API."""
+        # Skip update if within disabled period
+        if self._is_update_disabled():
+            _LOGGER.debug(
+                "Skipping update as current time is within the disabled updates period"
+            )
+            # Return current data to maintain state
+            return self.data
+
         # Get current date in YYYY-MM-DD format
         current_date = datetime.now().strftime("%Y-%m-%d")
         
@@ -375,6 +479,13 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
         # Add realtime data attributes
         data = self._realtime_coordinator.data
         arrivals = data.get("arrivals", [])
+        
+        # Add disabled updates period information
+        if hasattr(self._realtime_coordinator, "_disable_updates_start") and hasattr(self._realtime_coordinator, "_disable_updates_end"):
+            # Format as 24-hour format for consistency
+            attrs["start_of_API_break"] = self._realtime_coordinator._disable_updates_start.strftime("%H:%M")
+            attrs["end_of_API_break"] = self._realtime_coordinator._disable_updates_end.strftime("%H:%M")
+            attrs["API_currently_disabled"] = self._realtime_coordinator._is_update_disabled()
         
         if arrivals:
             attrs["total_departures_for_today"] = len(arrivals)
