@@ -6,6 +6,12 @@ CONF_API_KEY: Final = "api_key"
 CONF_STOP_ID: Final = "stop_id"
 CONF_STOP_TYPE: Final = "stop_type"
 
+# Configuration for disable period
+CONF_DISABLE_UPDATES_START: Final = "disable_updates_start"
+CONF_DISABLE_UPDATES_END: Final = "disable_updates_end"
+DEFAULT_DISABLE_UPDATES_START: Final = "01:00"
+DEFAULT_DISABLE_UPDATES_END: Final = "05:00"
+
 # Stop types
 STOP_TYPE_ALL: Final = "all"
 STOP_TYPE_TRAIN: Final = "train"
