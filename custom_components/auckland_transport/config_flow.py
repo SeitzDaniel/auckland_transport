@@ -22,6 +22,7 @@ from .const import (
     DOMAIN,
     STOP_TYPES,
     STOP_TYPE_ALL,
+    DEPARTURE_QTY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -200,6 +201,17 @@ class AucklandTransportOptionsFlow(config_entries.OptionsFlow):
                 CONF_DISABLE_UPDATES_END,
                 default=options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END),
             ): selector.TimeSelector(),
+            vol.Optional(
+                "departure_qty",
+                default=options.get("departure_qty", DEPARTURE_QTY),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, 
+                    max=10,
+                    mode="box",
+                    step=1
+                )
+            ),        
         })
 
         return self.async_show_form(step_id="init", data_schema=schema)
