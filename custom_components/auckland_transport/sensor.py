@@ -493,7 +493,7 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
             attrs["API_currently_disabled"] = self._realtime_coordinator._is_update_disabled()
         
         if arrivals:
-            attrs["total_departures_for_today"] = len(arrivals)
+            attrs["remaining_departures_for_today"] = len(arrivals)
             
             # Add numbered departures as attributes
             for idx, arrival in enumerate(arrivals, 1):
