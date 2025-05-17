@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     UPDATE_INTERVAL,
+    DEPARTURE_QTY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ async def async_setup_entry(
     disable_updates_start = entry.options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START)
     disable_updates_end = entry.options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END)
     
+    # Get departure quantity from options or use default
+    departure_qty = entry.options.get("departure_qty", DEPARTURE_QTY)
+
     _LOGGER.debug("Configured disable period: %s to %s", disable_updates_start, disable_updates_end)
     
     # Find stop details in coordinator data
@@ -80,8 +84,8 @@ async def async_setup_entry(
     # Initial data fetch - force immediate refresh
     await realtime_coordinator.async_refresh()
     
-    # Create the sensor entity
-    async_add_entities([AucklandTransportSensor(coordinator, realtime_coordinator, api_key, stop_data)])
+    # Create the sensor entity - passing departure_qty to the class
+    async_add_entities([AucklandTransportSensor(coordinator, realtime_coordinator, api_key, stop_data, departure_qty)])
 
 
 class RealtimeDataCoordinator(DataUpdateCoordinator):
@@ -392,7 +396,7 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
 class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
     """Auckland Transport sensor."""
 
-    def __init__(self, stop_coordinator, realtime_coordinator, api_key, stop_data):
+    def __init__(self, stop_coordinator, realtime_coordinator, api_key, stop_data, departure_qty):
         """Initialize the sensor."""
         # Initialize with the realtime coordinator
         super().__init__(realtime_coordinator)
@@ -405,6 +409,7 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
         self._attributes = stop_data.get("attributes", {})
         self._stop_name = self._attributes.get("stop_name", "Unknown Stop")
         self._stop_code = self._attributes.get("stop_code", "")
+        self._departure_qty = departure_qty  # Store departure_qty as instance variable
         
         # Set initial value from coordinator data if available
         data = self._realtime_coordinator.data if self._realtime_coordinator.data else {}
@@ -512,9 +517,8 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
                 attrs[f"{prefix}_route"] = arrival.get("route_id")
                 attrs[f"{prefix}_trip_id"] = arrival.get("trip_id")
                 
-                # Only include the first 4 departures to avoid overloading
-                # Notes: might add this as a variable at a later stage
-                if idx >= 4:
+                # Use departure_qty to control how many departures are getting added
+                if idx >= self._departure_qty:
                     break
         else:
             attrs["total_departures_for_today"] = 0
