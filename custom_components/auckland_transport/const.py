@@ -29,6 +29,9 @@ DEFAULT_SCAN_INTERVAL: Final = 60
 # Data update coordinator update interval for general data (5 minutes)
 UPDATE_INTERVAL: Final = 300
 
+# Default departures inlcuded (4 departures)
+DEPARTURE_QTY: Final = 4
+
 # Service attributes
 ATTR_STOP_NAME: Final = "stop_name"
 ATTR_STOP_CODE: Final = "stop_code"
