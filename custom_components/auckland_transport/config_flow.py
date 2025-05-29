@@ -99,19 +99,20 @@ class AucklandTransportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             stop_id = user_input[CONF_STOP_ID]
 
-            await self.async_set_unique_id(stop_id)
-            self._abort_if_unique_id_configured()
+            # Check if stop is already configured
+            if await self.async_set_unique_id(stop_id, raise_on_progress=False):
+                errors["base"] = "already_configured"
+            else:
+                self._data.update({
+                    CONF_STOP_TYPE: self._stop_type,
+                    CONF_STOP_ID: stop_id,
+                })
 
-            self._data.update({
-                CONF_STOP_TYPE: self._stop_type,
-                CONF_STOP_ID: stop_id,
-            })
-
-            combined_stop_name = stop_options[stop_id]
-            return self.async_create_entry(
-                title=f"AT Stop - {combined_stop_name}",
-                data=self._data,
-            )
+                combined_stop_name = stop_options[stop_id]
+                return self.async_create_entry(
+                    title=f"AT Stop - {combined_stop_name}",
+                    data=self._data,
+                )
 
         schema = vol.Schema({
             vol.Required(CONF_STOP_ID, default=next(iter(stop_options), "")):
