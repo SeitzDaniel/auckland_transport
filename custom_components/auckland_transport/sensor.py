@@ -521,6 +521,6 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
                 if idx >= self._departure_qty:
                     break
         else:
-            attrs["total_departures_for_today"] = 0
+            attrs["remaining_departures_for_today"] = 0
         
         return attrs
