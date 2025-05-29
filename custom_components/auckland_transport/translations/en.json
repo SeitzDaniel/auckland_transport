@@ -26,7 +26,8 @@
       "error": {
         "invalid_auth": "Invalid API key",
         "cannot_connect": "Failed to connect to Auckland Transport API",
-        "unknown": "Unexpected error"
+        "unknown": "Unexpected error",
+        "already_configured": "This stop is already configured. Choose a diffrent one."
       },
       "abort": {
         "already_configured": "This stop is already configured. Choose a diffrent one."
