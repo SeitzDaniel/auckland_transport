@@ -18,3 +18,9 @@ If you prefer to instal manually, copy custom_components/auckland_transport to y
 ## Configuration
 
 Will add some text and screenshots here....
+
+## Lovelace Card
+There is an example lovelace card in [train-times-card.yaml](train-times-card.yaml)
+Paste this into a Manual → Markdown card.
+
+`![alt text](/train-times-card.png`
