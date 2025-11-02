@@ -1,0 +1,70 @@
+  {% set s = 'sensor.auckland_transport_meadowbank_train_station' %}
+
+  {% if state_attr(s, 'API_currently_disabled') %}
+  **AT feed is in break** ({{ state_attr(s, 'start_of_API_break') }}–{{ state_attr(s, 'end_of_API_break') }}).
+  {% endif %}
+
+  {% set ns = namespace(found=[]) %}
+
+  {% for i in range(1, 11) %}
+    {% set headsign = state_attr(s, 'departure_' ~ i ~ '_headsign') %}
+    {% if not headsign %}{% continue %}{% endif %}
+
+    {# Only Britomart-bound #}
+    {% if 'to brit' not in headsign | lower %}{% continue %}{% endif %}
+
+    {% set sched = state_attr(s, 'departure_' ~ i ~ '_scheduled_time') %}
+    {% set actual = state_attr(s, 'departure_' ~ i ~ '_actual_time') %}
+    {% set delay_s = state_attr(s, 'departure_' ~ i ~ '_delay_in_seconds') | int(0) %}
+
+    {# If scheduled hour >= 24, it's a next-day departure #}
+    {% set h_sched = (sched.split(':')[0] | int(0)) if sched else 0 %}
+    {% set add_day = 1 if h_sched >= 24 else 0 %}
+
+    {# Build a base datetime using actual if present, otherwise scheduled (clamped to 0–23) #}
+    {% if actual %}
+      {% set base = today_at(actual) %}
+    {% elif sched %}
+      {% set s_h = (h_sched - 24) if h_sched >= 24 else h_sched %}
+      {% set s_m = sched.split(':')[1] %}
+      {% set s_s = sched.split(':')[2] %}
+      {% set sched_timestr = ('%02d' | format(s_h)) ~ ':' ~ s_m ~ ':' ~ s_s %}
+      {% set base = today_at(sched_timestr) %}
+    {% else %}
+      {% continue %}
+    {% endif %}
+
+    {% set dt = base + timedelta(days=add_day) %}
+    {% set mins = ((as_timestamp(dt) - as_timestamp(now())) / 60) | round(0) %}
+
+    {# Only show future departures #}
+    {% if mins < 0 %}{% continue %}{% endif %}
+
+    {% set delay_min = (delay_s / 60) | round(0) %}
+    {% if delay_min > 0 %}
+      {% set delay_str = '+' ~ delay_min ~ ' min' %}
+    {% elif delay_min < 0 %}
+      {% set delay_str = delay_min ~ ' min' %}
+    {% else %}
+      {% set delay_str = 'On time' %}
+    {% endif %}
+
+    {% set line = {
+      'mins': mins,
+      'when': dt.strftime('%-I:%M %p') if dt.strftime else dt,
+      'delay': delay_str,
+      'headsign': headsign
+    } %}
+    {% set ns.found = ns.found + [line] %}
+  {% endfor %}
+
+  {% if ns.found | length == 0 %}
+  _No upcoming Britomart-bound trains._
+  {% else %}
+  {% set sorted = ns.found | sort(attribute='mins') %}
+  **Next departures:**
+  {% for d in sorted[:5] %}
+  • **{{ d.mins }} min** ({{ d.when }}) — {{ d.delay }}
+    <br/>{{ d.headsign }}
+  {% endfor %}
+  {% endif %}
