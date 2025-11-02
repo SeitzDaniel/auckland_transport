@@ -343,45 +343,49 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
             try:
                 hour, minute, second = map(int, scheduled_departure_time.split(':'))
                 
-                # FIX: Handle 24-hour time format correctly
-                if hour == 24:  # If hour is 24 (midnight), convert to 0
-                    hour = 0
-                elif hour > 24:  # If hour is >24 (next day), handle as next day
-                    # Calculate days to add
+                # Handle extended transit time format (24+ hours)
+                days_to_add = 0
+                if hour >= 24:
+                    # Calculate days to add and normalize hour
                     days_to_add = hour // 24
-                    # Get the remaining hour
                     hour = hour % 24
-                    # Create the base datetime and add days
-                    scheduled_dt = datetime(
-                        now.year, now.month, now.day, 
-                        hour, minute, second
-                    ) + timedelta(days=days_to_add)
-                else:
-                    # Normal case (0-23 hours)
-                    scheduled_dt = datetime(
-                        now.year, now.month, now.day, 
-                        hour, minute, second
-                    )
+                
+                # Create the scheduled datetime
+                scheduled_dt = datetime(
+                    now.year, now.month, now.day, 
+                    hour, minute, second
+                ) + timedelta(days=days_to_add)
                 
                 # Calculate actual departure time with delay
                 delay_seconds = trip.get("delay_seconds", 0) or 0
                 actual_dt = scheduled_dt + timedelta(seconds=delay_seconds)
                 
+                # Skip trips that have already departed (considering delay)
+                # Do this check BEFORE potentially adding a day
+                if actual_dt < now and days_to_add == 0:
+                    # This trip has already departed today, skip it
+                    continue
+                
+                # If we get here and the time is still in the past with days_to_add,
+                # it means it's a next-day service that hasn't departed yet
+                
+                # Normalize the scheduled time to standard 24-hour format for display
+                trip["scheduled_departure_time"] = scheduled_dt.strftime("%H:%M:%S")
+                
                 # Format the actual departure time
                 trip["actual_departure_time"] = actual_dt.strftime("%H:%M:%S")
                 
-                # Skip trips that have already departed (considering delay)
-                if actual_dt < now:
-                    continue
+                # Store the datetime object for proper sorting
+                trip["actual_departure_datetime"] = actual_dt
                 
                 arrivals.append(trip)
             except Exception as e:
-                _LOGGER.error("Error calculating actual departure time: %s", e)
-                # If we can't parse the time, still include the trip
-                arrivals.append(trip)
+                _LOGGER.error("Error calculating actual departure time for trip %s: %s", trip.get("trip_id"), e)
+                # Skip trips with parsing errors to avoid incorrect ordering
+                continue
         
-        # Sort arrivals by actual departure time
-        arrivals.sort(key=lambda x: x.get("actual_departure_time", x.get("scheduled_departure_time", "")))
+        # Sort arrivals by actual departure datetime
+        arrivals.sort(key=lambda x: x.get("actual_departure_datetime", datetime.max))
         
         # Set the first valid trip as next_departure
         if arrivals:
