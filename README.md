@@ -51,7 +51,9 @@ You can change update interval, disable API calls during set times and adjust ho
 
 <img width="421" height="456" alt="image" src="https://github.com/user-attachments/assets/ec5d5efe-d511-4dee-a314-3e163e0326b1" />
 
+## License
 
+MIT © [Daniel Seitz](https://github.com/SeitzDaniel)
 
 
 
