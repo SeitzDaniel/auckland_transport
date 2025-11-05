@@ -51,6 +51,14 @@ You can change update interval, disable API calls during set times and adjust ho
 
 <img width="421" height="456" alt="image" src="https://github.com/user-attachments/assets/ec5d5efe-d511-4dee-a314-3e163e0326b1" />
 
+
+## Custom Card
+
+To visualize your stops you can get the custom card from [here](https://github.com/SeitzDaniel/auckland-transport-card).
+
+<img width="812" height="357" alt="image" src="https://github.com/user-attachments/assets/5d345527-2932-43ee-a3f7-a729b431c12c" />
+
+
 ## License
 
 MIT © [Daniel Seitz](https://github.com/SeitzDaniel)
