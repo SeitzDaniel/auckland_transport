@@ -52,6 +52,61 @@ class AucklandTransportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._data = None
 
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
+        """Handle the initial step - choose between existing or new API key."""
+        existing_api_keys = self._get_existing_api_keys()
+
+        if not existing_api_keys:
+            # No existing API keys, go straight to entering a new one
+            return await self.async_step_new_api_key()
+
+        if user_input is not None:
+            choice = user_input.get("api_key_choice")
+            
+            if choice == "new":
+                return await self.async_step_new_api_key()
+            else:
+                # User selected an existing API key
+                self._api_key = choice
+                self._data = {CONF_API_KEY: choice}
+                return await self.async_step_stop_type_selection()
+
+        # Build options for the selection
+        api_key_options = {key: label for key, label in existing_api_keys.items()}
+        api_key_options["new"] = "Enter new API key"
+
+        schema = vol.Schema({
+            vol.Required("api_key_choice"): vol.In(api_key_options)
+        })
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            description_placeholders={
+                "existing_count": str(len(existing_api_keys))
+            }
+        )
+
+    def _get_existing_api_keys(self) -> Dict[str, str]:
+        """Get all existing API keys from configured entries."""
+        api_key_counts = {}
+        
+        # Count how many stops use each API key
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            api_key = entry.data.get(CONF_API_KEY)
+            if api_key:
+                api_key_counts[api_key] = api_key_counts.get(api_key, 0) + 1
+        
+        # Build the display labels
+        existing_keys = {}
+        for api_key, count in api_key_counts.items():
+            masked_key = f"...{api_key[-8:]}" if len(api_key) > 8 else "***"
+            stop_text = "stop" if count == 1 else "stops"
+            existing_keys[api_key] = f"{masked_key} (used by {count} {stop_text})"
+        
+        return existing_keys
+
+    async def async_step_new_api_key(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
+        """Handle entering a new API key."""
         errors = {}
 
         if user_input is not None:
@@ -67,7 +122,7 @@ class AucklandTransportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema({vol.Required(CONF_API_KEY): str})
 
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="new_api_key", data_schema=schema, errors=errors)
 
     async def async_step_stop_type_selection(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         if user_input is not None:
