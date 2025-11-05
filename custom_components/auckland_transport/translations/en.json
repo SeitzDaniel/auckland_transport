@@ -3,6 +3,13 @@
       "step": {
         "user": {
           "title": "Auckland Transport",
+          "description": "Choose an existing API key or enter a new one.",
+          "data": {
+            "api_key_choice": "API Key Selection"
+          }
+        },
+        "new_api_key": {
+          "title": "Enter New API Key",
           "description": "If you don't already have an API key, you can get one from here https://dev-portal.at.govt.nz/signup.",
           "data": {
             "api_key": "API Key"
