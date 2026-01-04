@@ -49,10 +49,12 @@
             "update_interval": "Update interval (seconds)",
             "disable_updates_start": "Disable API Calls From",
             "disable_updates_end": "Disable API Calls To",
+            "show_all_departures": "Include all departures",
             "departure_qty": "Included departures"
           },
           "data_description": {
-            "departure_qty": "Min=1; Max=10; Default=4"
+            "show_all_departures": "When disabled, you can specify how many departures to include. If you have just disabled this option, click “Submit” to load the departure section.",
+            "departure_qty": "Min=1"
           }
         }
       }
