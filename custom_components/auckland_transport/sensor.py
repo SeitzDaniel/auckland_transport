@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     UPDATE_INTERVAL,
+                  
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,8 +54,8 @@ async def async_setup_entry(
     disable_updates_start = entry.options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START)
     disable_updates_end = entry.options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END)
     
-    # Get departure quantity from options or use default
-    departure_qty = entry.options.get("departure_qty", DEPARTURE_QTY)
+    # Get departure quantity from options (None means show all)
+    departure_qty = entry.options.get("departure_qty")
 
     _LOGGER.debug("Configured disable period: %s to %s", disable_updates_start, disable_updates_end)
     
@@ -521,7 +522,8 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
                 attrs[f"{prefix}_trip_id"] = arrival.get("trip_id")
                 
                 # Use departure_qty to control how many departures are getting added
-                if idx >= self._departure_qty:
+                # If departure_qty is None, show all departures (don't break)
+                if self._departure_qty is not None and idx >= self._departure_qty:
                     break
         else:
             attrs["remaining_departures_for_today"] = 0
