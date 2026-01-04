@@ -47,9 +47,9 @@ If you prefer to instal manually, copy custom_components/auckland_transport to y
 
 <img width="624" height="261" alt="image" src="https://github.com/user-attachments/assets/f12aa157-e7ea-437f-95ef-312f8c99662b" />
 
-You can change update interval, disable API calls during set times and adjust how many upcoming departures are included within the attributes.
+You can configure the update interval, disable API calls during specified times, and choose how many upcoming departures to include, or include all of them in the attributes.
 
-<img width="421" height="456" alt="image" src="https://github.com/user-attachments/assets/ec5d5efe-d511-4dee-a314-3e163e0326b1" />
+<img width="421" height="456" alt="image" src="https://github.com/user-attachments/assets/0d8b589b-796f-4901-8dc1-3885f0b22bbd" />
 
 
 ## Custom Card
