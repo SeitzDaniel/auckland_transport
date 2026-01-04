@@ -22,7 +22,6 @@ from .const import (
     DOMAIN,
     STOP_TYPES,
     STOP_TYPE_ALL,
-    DEPARTURE_QTY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -239,12 +238,82 @@ class AucklandTransportOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         """Manage the options."""
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
         options = self._entry.options
+        
+        if user_input is not None:
+            show_all_departures = user_input.get("show_all_departures", False)
+            
+            # If checkbox is unchecked but departure_qty is not in user_input,
+            # Re-show the form with the number field visible.
+            if not show_all_departures and "departure_qty" not in user_input:
+                # Checkbox was just unchecked, re-show form with number field visible
+                current_departure_qty = options.get("departure_qty")
+                default_departure_qty = current_departure_qty if current_departure_qty is not None else 4
+                
+                schema = vol.Schema({
+                    vol.Optional(
+                        "update_interval",
+                        default=user_input.get("update_interval", options.get("update_interval", DEFAULT_SCAN_INTERVAL)),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+                    vol.Optional(
+                        CONF_DISABLE_UPDATES_START,
+                        default=user_input.get(CONF_DISABLE_UPDATES_START, options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START)),
+                    ): selector.TimeSelector(),
+                    vol.Optional(
+                        CONF_DISABLE_UPDATES_END,
+                        default=user_input.get(CONF_DISABLE_UPDATES_END, options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END)),
+                    ): selector.TimeSelector(),
+                    vol.Optional(
+                        "show_all_departures",
+                        default=False,
+                    ): bool,
+                    vol.Optional(
+                        "departure_qty",
+                        default=default_departure_qty,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1, 
+                            mode="box",
+                            step=1
+                        )
+                    ),        
+                })
+                
+                return self.async_show_form(step_id="init", data_schema=schema)
+            
+            # Process the form data
+            processed_data = {}
+            
+            # Copy other options
+            processed_data["update_interval"] = user_input.get("update_interval", options.get("update_interval", DEFAULT_SCAN_INTERVAL))
+            processed_data[CONF_DISABLE_UPDATES_START] = user_input.get(CONF_DISABLE_UPDATES_START, options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START))
+            processed_data[CONF_DISABLE_UPDATES_END] = user_input.get(CONF_DISABLE_UPDATES_END, options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END))
+            
+            # Handle departure_qty based on checkbox
+            if show_all_departures:
+                # If checkbox is checked, set departure_qty to None to show all
+                processed_data["departure_qty"] = None
+            else:
+                # If checkbox is not checked, use the entered value or preserve previous
+                departure_qty = user_input.get("departure_qty")
+                if departure_qty is not None:
+                    processed_data["departure_qty"] = departure_qty
+                else:
+                    # If no value provided and checkbox is unchecked, preserve previous value or use default
+                    previous_qty = options.get("departure_qty")
+                    processed_data["departure_qty"] = previous_qty if previous_qty is not None else 4
+            
+            return self.async_create_entry(title="", data=processed_data)
 
-        schema = vol.Schema({
+        # Initial form load
+        current_departure_qty = options.get("departure_qty")
+        show_all_departures = current_departure_qty is None
+        
+        # Get the default departure_qty value for the number field
+        default_departure_qty = current_departure_qty if current_departure_qty is not None else 4
+
+        # Build schema conditionally - only include departure_qty if checkbox is unchecked
+        schema_dict = {
             vol.Optional(
                 "update_interval",
                 default=options.get("update_interval", DEFAULT_SCAN_INTERVAL),
@@ -258,16 +327,24 @@ class AucklandTransportOptionsFlow(config_entries.OptionsFlow):
                 default=options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END),
             ): selector.TimeSelector(),
             vol.Optional(
+                "show_all_departures",
+                default=show_all_departures,
+            ): bool,
+        }
+        
+        # Only include departure_qty field if checkbox is unchecked
+        if not show_all_departures:
+            schema_dict[vol.Optional(
                 "departure_qty",
-                default=options.get("departure_qty", DEPARTURE_QTY),
-            ): selector.NumberSelector(
+                default=default_departure_qty,
+            )] = selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=1, 
-                    max=10,
                     mode="box",
                     step=1
                 )
-            ),        
-        })
+            )
+
+        schema = vol.Schema(schema_dict)
 
         return self.async_show_form(step_id="init", data_schema=schema)
