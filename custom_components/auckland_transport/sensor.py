@@ -31,7 +31,6 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     UPDATE_INTERVAL,
-    DEPARTURE_QTY,
 )
 
 _LOGGER = logging.getLogger(__name__)
