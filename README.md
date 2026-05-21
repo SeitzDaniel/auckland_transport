@@ -43,6 +43,12 @@ If you prefer to instal manually, copy custom_components/auckland_transport to y
 
 <img width="438" height="812" alt="image" src="https://github.com/user-attachments/assets/f83568be-ba5c-47cc-aeb0-9aadcd88d90b" />
 
+#### The secondary sensor is tracking the next trip gps location.
+* Attributes include the following.
+  
+<img width="574" height="823" alt="image" src="https://github.com/user-attachments/assets/35960deb-664c-4d6b-ad4e-1cd362713718" />
+
+
 ## ⚙️ Additional Settings
 
 <img width="624" height="261" alt="image" src="https://github.com/user-attachments/assets/f12aa157-e7ea-437f-95ef-312f8c99662b" />
