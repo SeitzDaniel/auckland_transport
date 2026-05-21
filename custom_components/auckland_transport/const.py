@@ -22,6 +22,7 @@ STOP_TYPES: Final = [STOP_TYPE_ALL, STOP_TYPE_TRAIN, STOP_TYPE_BUS, STOP_TYPE_FE
 # API endpoints
 API_BASE_URL: Final = "https://api.at.govt.nz/gtfs/v3"
 API_STOPS_ENDPOINT: Final = f"{API_BASE_URL}/stops"
+API_REALTIME_COMBINED: Final = "https://api.at.govt.nz/realtime/legacy"
 
 # Default update interval in seconds (60 seconds)
 DEFAULT_SCAN_INTERVAL: Final = 60
