@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import (
     API_BASE_URL,
+    API_REALTIME_COMBINED,
     ATTR_LOCATION_TYPE,
     ATTR_STOP_CODE,
     ATTR_STOP_LAT,
@@ -83,8 +84,11 @@ async def async_setup_entry(
     # Initial data fetch - force immediate refresh
     await realtime_coordinator.async_refresh()
     
-    # Create the sensor entity - passing departure_qty to the class
-    async_add_entities([AucklandTransportSensor(coordinator, realtime_coordinator, api_key, stop_data, departure_qty)])
+    # Create both sensor entities - departure time sensor and vehicle location sensor
+    async_add_entities([
+        AucklandTransportSensor(coordinator, realtime_coordinator, api_key, stop_data, departure_qty),
+        AucklandTransportVehicleLocationSensor(coordinator, realtime_coordinator, api_key, stop_data)
+    ])
 
 
 class RealtimeDataCoordinator(DataUpdateCoordinator):
@@ -108,7 +112,7 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         )
         self._api_key = api_key
         self._stop_id = stop_id
-        self.data = {"arrivals": [], "next_departure": None}
+        self.data = {"arrivals": [], "next_departure": None, "vehicle_locations": {}}
         
         # Parse disable period times
         try:
@@ -224,21 +228,28 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                         # Extract all trips
                         all_trips = self._extract_trips(result)
                         
-                        # Extract all trip IDs for batch processing
+                        # Extract all trip IDs for filtering realtime data
                         trip_ids = [trip.get("trip_id") for trip in all_trips if trip.get("trip_id")]
                         
-                        # Fetch realtime details for all trips in one batch call
+                        # Fetch combined realtime data (trip updates + vehicle positions)
                         if trip_ids:
-                            realtime_details_batch = await self._fetch_realtime_trip_details_batch(session, trip_ids)
+                            realtime_data = await self._fetch_combined_realtime_data(session, trip_ids)
                             
                             # Update each trip with its realtime details
                             for trip in all_trips:
                                 trip_id = trip.get("trip_id")
-                                if trip_id and trip_id in realtime_details_batch:
-                                    trip.update(realtime_details_batch[trip_id])
+                                if trip_id and trip_id in realtime_data["trip_updates"]:
+                                    trip.update(realtime_data["trip_updates"][trip_id])
+                            
+                            vehicle_locations = realtime_data["vehicle_locations"]
+                        else:
+                            vehicle_locations = {}
                         
                         # Process trips with delay information
                         processed_data = self._process_trips_with_delay(all_trips)
+                        
+                        # Add vehicle locations to the result
+                        processed_data["vehicle_locations"] = vehicle_locations
                         
                         return processed_data
                     else:
@@ -247,10 +258,10 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                             response.status,
                             await response.text(),
                         )
-                        return {"arrivals": [], "next_departure": None}
+                        return {"arrivals": [], "next_departure": None, "vehicle_locations": {}}
         except Exception as err:
             _LOGGER.error("Error fetching real-time data: %s", err)
-            return {"arrivals": [], "next_departure": None}
+            return {"arrivals": [], "next_departure": None, "vehicle_locations": {}}
     
     def _extract_trips(self, response_data):
         """Extract trip data from API response."""
@@ -275,26 +286,30 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         
         return trips
     
-    async def _fetch_realtime_trip_details_batch(self, session, trip_ids):
-        """Fetch additional real-time details for multiple trips in one batch request."""
-        api_endpoint = "https://api.at.govt.nz/realtime/legacy/tripupdates"
-        # Join multiple trip IDs with comma
+    async def _fetch_combined_realtime_data(self, session, trip_ids):
+        """Fetch combined real-time data (trip updates + vehicle positions) in one API call."""
+        # Use the combined realtime endpoint with trip filter
         params = {"tripid": ",".join(trip_ids)}
         headers = {"Cache-Control": "no-cache", "Ocp-Apim-Subscription-Key": self._api_key}
         
-        results = {}
+        trip_updates = {}
+        vehicle_locations = {}
         
         try:
-            async with session.get(api_endpoint, params=params, headers=headers) as response:
+            async with session.get(API_REALTIME_COMBINED, params=params, headers=headers) as response:
                 if response.status == 200:
                     result = await response.json()
                     
                     if result.get("status") == "OK" and "response" in result:
                         entities = result["response"].get("entity", [])
+                        
                         for entity in entities:
-                            trip_id = entity.get("id")
-                            if trip_id and "trip_update" in entity:
+                            entity_id = entity.get("id")
+                            
+                            # Process trip updates
+                            if "trip_update" in entity:
                                 trip_update = entity["trip_update"]
+                                trip_id = entity_id
                                 
                                 # Extract license plate
                                 license_plate = None
@@ -308,20 +323,49 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                                 elif "stop_time_update" in trip_update and "arrival" in trip_update["stop_time_update"]:
                                     delay_seconds = trip_update["stop_time_update"]["arrival"].get("delay")
                                 
-                                results[trip_id] = {
+                                trip_updates[trip_id] = {
                                     "license_plate": license_plate,
                                     "delay_seconds": delay_seconds
                                 }
+                            
+                            # Process vehicle positions
+                            if "vehicle" in entity:
+                                vehicle = entity["vehicle"]
+                                
+                                # Extract position data
+                                position = vehicle.get("position", {})
+                                trip = vehicle.get("trip", {})
+                                
+                                vehicle_data = {
+                                    "latitude": position.get("latitude"),
+                                    "longitude": position.get("longitude"),
+                                    "bearing": position.get("bearing"),
+                                    "speed": position.get("speed"),
+                                    "timestamp": entity.get("timestamp"),
+                                    "trip_id": trip.get("trip_id"),
+                                    "route_id": trip.get("route_id"),
+                                    "vehicle_id": vehicle.get("vehicle", {}).get("id"),
+                                    "license_plate": vehicle.get("vehicle", {}).get("license_plate"),
+                                }
+                                
+                                # Store by trip_id for easy lookup
+                                trip_id = trip.get("trip_id")
+                                if trip_id:
+                                    vehicle_locations[trip_id] = vehicle_data
+                        
                 else:
                     _LOGGER.error(
-                        "Error fetching batch real-time trip details: %s (%s)",
+                        "Error fetching combined realtime data: %s (%s)",
                         response.status,
                         await response.text(),
                     )
         except Exception as err:
-            _LOGGER.error("Error fetching batch real-time trip details: %s", err)
+            _LOGGER.error("Error fetching combined realtime data: %s", err)
         
-        return results
+        return {
+            "trip_updates": trip_updates,
+            "vehicle_locations": vehicle_locations
+        }
     
     def _process_trips_with_delay(self, trips):
         """Process trips considering delay information."""
@@ -392,7 +436,8 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
         
         return {
             "arrivals": arrivals,
-            "next_departure": next_departure
+            "next_departure": next_departure,
+            "vehicle_locations": {}
         }
 
 
@@ -526,5 +571,138 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
                     break
         else:
             attrs["remaining_departures_for_today"] = 0
+        
+        return attrs
+
+
+class AucklandTransportVehicleLocationSensor(CoordinatorEntity, SensorEntity):
+    """Auckland Transport vehicle location sensor for map display."""
+
+    def __init__(self, stop_coordinator, realtime_coordinator, api_key, stop_data):
+        """Initialize the vehicle location sensor."""
+        # Initialize with the realtime coordinator
+        super().__init__(realtime_coordinator)
+        
+        self._stop_coordinator = stop_coordinator
+        self._realtime_coordinator = realtime_coordinator
+        self._api_key = api_key
+        self._stop_data = stop_data
+        self._stop_id = stop_data.get("id")
+        self._attributes = stop_data.get("attributes", {})
+        self._stop_name = self._attributes.get("stop_name", "Unknown Stop")
+        self._stop_code = self._attributes.get("stop_code", "")
+        
+        # Set initial value
+        self._attr_native_value = "No vehicle location"
+        
+        # Determine transport type based on stop_code
+        self._transport_type = "unknown"
+        if self._stop_code:
+            code_length = len(self._stop_code)
+            if code_length == 3:
+                self._transport_type = "train"
+            elif code_length == 4:
+                self._transport_type = "bus"
+            elif code_length == 5:
+                self._transport_type = "ferry"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return f"Auckland Transport {self._stop_name} Vehicle Location"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"auckland_transport_{self._stop_id}_vehicle_location"
+
+    @property
+    def icon(self) -> str:
+        """Return the icon based on transport type."""
+        if self._transport_type == "train":
+            return "mdi:train"
+        elif self._transport_type == "bus":
+            return "mdi:bus"
+        elif self._transport_type == "ferry":
+            return "mdi:ferry"
+        return "mdi:map-marker"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        data = self._realtime_coordinator.data
+        
+        # Get the next departure to find its vehicle location
+        next_departure = data.get("next_departure")
+        vehicle_locations = data.get("vehicle_locations", {})
+        
+        if next_departure and vehicle_locations:
+            trip_id = next_departure.get("trip_id")
+            if trip_id and trip_id in vehicle_locations:
+                vehicle_data = vehicle_locations[trip_id]
+                latitude = vehicle_data.get("latitude")
+                longitude = vehicle_data.get("longitude")
+                
+                if latitude is not None and longitude is not None:
+                    self._attr_native_value = f"{latitude}, {longitude}"
+                else:
+                    self._attr_native_value = "Location unavailable"
+            else:
+                self._attr_native_value = "Vehicle not tracked"
+        else:
+            self._attr_native_value = "No vehicle location"
+        
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return the state attributes."""
+        attrs = {
+            ATTR_STOP_NAME: self._stop_name,
+            ATTR_STOP_CODE: self._stop_code,
+            "transport_type": self._transport_type,
+        }
+        
+        # Get the next departure to find its vehicle location
+        data = self._realtime_coordinator.data
+        next_departure = data.get("next_departure")
+        vehicle_locations = data.get("vehicle_locations", {})
+        
+        if next_departure and vehicle_locations:
+            trip_id = next_departure.get("trip_id")
+            route_id = next_departure.get("route_id")
+            headsign = next_departure.get("trip_headsign")
+            
+            attrs["trip_id"] = trip_id
+            attrs["route_id"] = route_id
+            attrs["headsign"] = headsign
+            
+            if trip_id and trip_id in vehicle_locations:
+                vehicle_data = vehicle_locations[trip_id]
+                
+                # Add GPS coordinates for Home Assistant map card
+                latitude = vehicle_data.get("latitude")
+                longitude = vehicle_data.get("longitude")
+                
+                if latitude is not None and longitude is not None:
+                    attrs["latitude"] = latitude
+                    attrs["longitude"] = longitude
+                    attrs["gps_accuracy"] = 0  # GPS accuracy for map display
+                
+                # Add additional vehicle information
+                if vehicle_data.get("bearing") is not None:
+                    attrs["bearing"] = vehicle_data.get("bearing")
+                
+                if vehicle_data.get("speed") is not None:
+                    attrs["speed"] = vehicle_data.get("speed")
+                
+                if vehicle_data.get("timestamp"):
+                    attrs["last_update"] = vehicle_data.get("timestamp")
+                
+                if vehicle_data.get("vehicle_id"):
+                    attrs["vehicle_id"] = vehicle_data.get("vehicle_id")
+                
+                if vehicle_data.get("license_plate"):
+                    attrs["license_plate"] = vehicle_data.get("license_plate")
         
         return attrs
