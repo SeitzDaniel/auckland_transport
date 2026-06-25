@@ -280,6 +280,7 @@ class RealtimeDataCoordinator(DataUpdateCoordinator):
                 "stop_headsign": attributes.get("stop_headsign"),
                 "route_id": attributes.get("route_id"),
                 "trip_id": attributes.get("trip_id"),
+                "pickup_type": attributes.get("pickup_type"),
             }
             
             trips.append(trip_data)
@@ -564,6 +565,9 @@ class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
                 attrs[f"{prefix}_headsign"] = arrival.get("trip_headsign")
                 attrs[f"{prefix}_route"] = arrival.get("route_id")
                 attrs[f"{prefix}_trip_id"] = arrival.get("trip_id")
+                # GTFS pickup_type: 1 = no boarding here, i.e. the service
+                # terminates at this stop (arriving). 0 = boardable (departing).
+                attrs[f"{prefix}_pickup_type"] = arrival.get("pickup_type")
                 
                 # Use departure_qty to control how many departures are getting added
                 # If departure_qty is None, show all departures (don't break)
