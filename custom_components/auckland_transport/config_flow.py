@@ -1,350 +1,407 @@
+"""Config and options flow for Auckland Transport."""
+
+from __future__ import annotations
+
 import logging
-from typing import Any, Dict, Optional
+from collections.abc import Mapping
+from typing import Any
 
-import aiohttp
 import voluptuous as vol
-from homeassistant import config_entries
-from homeassistant.const import CONF_API_KEY
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers import selector
-
-from .const import (
-    API_STOPS_ENDPOINT,
-    CONF_DISABLE_UPDATES_END,
-    CONF_DISABLE_UPDATES_START,
-    CONF_STOP_ID,
-    CONF_STOP_TYPE,
-    DEFAULT_DISABLE_UPDATES_END,
-    DEFAULT_DISABLE_UPDATES_START,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    STOP_TYPES,
-    STOP_TYPE_ALL,
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
 )
+from homeassistant.core import callback
+from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from .api import ATApiError, ATAuthError, AucklandTransportApi
+from .const import (
+    CONF_API_KEY,
+    CONF_DEPARTURE_SENSORS,
+    CONF_HIDE_ARRIVALS,
+    CONF_INCLUDE_SCHOOL_BUSES,
+    CONF_LEGACY_ATTRIBUTES,
+    CONF_ONLY_ACTIVE_ALERTS,
+    CONF_STOP_CODE,
+    CONF_STOP_ID,
+    CONF_STOP_NAME,
+    CONF_STOP_TYPE,
+    DEFAULT_DEPARTURE_SENSORS,
+    DEFAULT_HIDE_ARRIVALS,
+    DEFAULT_INCLUDE_SCHOOL_BUSES,
+    DEFAULT_LEGACY_ATTRIBUTES,
+    DEFAULT_ONLY_ACTIVE_ALERTS,
+    DOMAIN,
+    MAX_DEPARTURE_SENSORS,
+    MODE_BUS,
+    MODE_FERRY,
+    MODE_TRAIN,
+    STOP_TYPE_ALL,
+    STOP_TYPES,
+)
+from .model import Stop
 
 _LOGGER = logging.getLogger(__name__)
 
+# Cap how many stops are offered at once; a 7000 entry dropdown is unusable.
+MAX_PICKER_RESULTS = 80
 
-async def validate_api_key(hass: HomeAssistant, api_key: str) -> bool:
-    session = async_get_clientsession(hass)
-    headers = {
-        "Cache-Control": "no-cache",
-        "Ocp-Apim-Subscription-Key": api_key,
-    }
-
-    try:
-        async with session.get(API_STOPS_ENDPOINT, headers=headers) as response:
-            return response.status == 200
-    except aiohttp.ClientError:
-        return False
+CONF_SEARCH = "search"
+CONF_INCLUDE_PLATFORMS = "include_platforms"
 
 
-class AucklandTransportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+async def _async_fetch_stops(hass, api_key: str) -> list[Stop]:
+    """Fetch and parse the stop list for the picker."""
+    api = AucklandTransportApi(async_get_clientsession(hass), api_key)
+    raw = await api.async_get_stops()
+    stops = [stop for item in raw if (stop := Stop.from_api(item))]
+    stops.sort(key=lambda stop: (stop.stop_name, stop.stop_code))
+    return stops
 
-    def __init__(self):
-        self._api_key = None
-        self._stops_by_type = {}
-        self._stop_type = STOP_TYPE_ALL
-        self._data = None
 
-    async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
-        """Handle the initial step - choose between existing or new API key."""
-        existing_api_keys = self._get_existing_api_keys()
+def _filter_stops(
+    stops: list[Stop], mode: str, search: str, include_platforms: bool
+) -> list[Stop]:
+    """Narrow the stop list by mode and search text.
 
-        if not existing_api_keys:
-            # No existing API keys, go straight to entering a new one
+    Ordering puts an exact stop-code match first, then parent stations, then
+    everything else alphabetically.
+    """
+    needle = (search or "").strip().lower()
+    ranked: list[tuple[bool, bool, str, str, Stop]] = []
+
+    for stop in stops:
+        code = stop.stop_code.lower()
+        exact_code = bool(needle) and code == needle
+
+        if needle and not exact_code:
+            if needle not in stop.stop_name.lower() and needle not in code:
+                continue
+
+        # Platforms are normally hidden because the parent station already covers
+        # them all. An exact stop-code match is the number printed on the sign,
+        # though, so it is always offered.
+        if not include_platforms and stop.parent_station and not exact_code:
+            continue
+
+        if mode != STOP_TYPE_ALL and stop.guess_mode() != mode:
+            continue
+
+        ranked.append((not exact_code, not stop.is_station, stop.stop_name, stop.stop_code, stop))
+
+    ranked.sort(key=lambda item: item[:4])
+    return [item[4] for item in ranked]
+
+
+class AucklandTransportConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle the Auckland Transport config flow."""
+
+    VERSION = 2
+
+    def __init__(self) -> None:
+        """Initialise the flow state."""
+        self._api_key: str | None = None
+        self._stops: list[Stop] = []
+        self._mode: str = STOP_TYPE_ALL
+        self._search: str = ""
+        self._include_platforms: bool = False
+
+    # -- API key -----------------------------------------------------------
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reuse an already configured API key or ask for a new one."""
+        existing = self._existing_api_keys()
+        if not existing:
             return await self.async_step_new_api_key()
 
         if user_input is not None:
-            choice = user_input.get("api_key_choice")
-            
+            choice = user_input["api_key_choice"]
             if choice == "new":
                 return await self.async_step_new_api_key()
-            else:
-                # User selected an existing API key
-                self._api_key = choice
-                self._data = {CONF_API_KEY: choice}
-                return await self.async_step_stop_type_selection()
+            self._api_key = choice
+            return await self.async_step_stop_filter()
 
-        # Build options for the selection
-        api_key_options = {key: label for key, label in existing_api_keys.items()}
-        api_key_options["new"] = "Enter new API key"
-
-        schema = vol.Schema({
-            vol.Required("api_key_choice"): vol.In(api_key_options)
-        })
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=schema,
-            description_placeholders={
-                "existing_count": str(len(existing_api_keys))
+        options = [
+            selector.SelectOptionDict(value=key, label=label)
+            for key, label in existing.items()
+        ]
+        options.append(
+            selector.SelectOptionDict(value="new", label="Enter a new API key")
+        )
+        schema = vol.Schema(
+            {
+                vol.Required("api_key_choice", default=next(iter(existing))): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                )
             }
         )
+        return self.async_show_form(step_id="user", data_schema=schema)
 
-    def _get_existing_api_keys(self) -> Dict[str, str]:
-        """Get all existing API keys from configured entries."""
-        api_key_counts = {}
-        
-        # Count how many stops use each API key
+    def _existing_api_keys(self) -> dict[str, str]:
+        """Return configured API keys, masked, with a usage count."""
+        counts: dict[str, int] = {}
         for entry in self.hass.config_entries.async_entries(DOMAIN):
-            api_key = entry.data.get(CONF_API_KEY)
-            if api_key:
-                api_key_counts[api_key] = api_key_counts.get(api_key, 0) + 1
-        
-        # Build the display labels
-        existing_keys = {}
-        for api_key, count in api_key_counts.items():
-            masked_key = f"...{api_key[-8:]}" if len(api_key) > 8 else "***"
-            stop_text = "stop" if count == 1 else "stops"
-            existing_keys[api_key] = f"{masked_key} (used by {count} {stop_text})"
-        
-        return existing_keys
+            if key := entry.data.get(CONF_API_KEY):
+                counts[key] = counts.get(key, 0) + 1
 
-    async def async_step_new_api_key(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
-        """Handle entering a new API key."""
-        errors = {}
+        labels: dict[str, str] = {}
+        for key, count in counts.items():
+            masked = f"…{key[-8:]}" if len(key) > 8 else "***"
+            labels[key] = f"{masked} ({count} stop{'s' if count != 1 else ''})"
+        return labels
 
+    async def async_step_new_api_key(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate and store a newly entered API key."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            api_key = user_input[CONF_API_KEY]
-            valid = await validate_api_key(self.hass, api_key)
-
-            if valid:
-                self._api_key = api_key
-                self._data = {CONF_API_KEY: api_key}
-                return await self.async_step_stop_type_selection()
-            else:
+            api_key = user_input[CONF_API_KEY].strip()
+            api = AucklandTransportApi(async_get_clientsession(self.hass), api_key)
+            try:
+                await api.async_validate_key()
+            except ATAuthError:
                 errors["base"] = "invalid_auth"
+            except ATApiError:
+                errors["base"] = "cannot_connect"
+            else:
+                self._api_key = api_key
+                return await self.async_step_stop_filter()
 
-        schema = vol.Schema({vol.Required(CONF_API_KEY): str})
+        schema = vol.Schema(
+            {vol.Required(CONF_API_KEY): selector.TextSelector()}
+        )
+        return self.async_show_form(
+            step_id="new_api_key", data_schema=schema, errors=errors
+        )
 
-        return self.async_show_form(step_id="new_api_key", data_schema=schema, errors=errors)
+    # -- reauth ------------------------------------------------------------
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Start the reauthentication flow."""
+        return await self.async_step_reauth_confirm()
 
-    async def async_step_stop_type_selection(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for a replacement API key and update every entry that used it."""
+        errors: dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        if entry is None:
+            return self.async_abort(reason="unknown")
+
         if user_input is not None:
-            self._stop_type = user_input[CONF_STOP_TYPE]
+            api_key = user_input[CONF_API_KEY].strip()
+            api = AucklandTransportApi(async_get_clientsession(self.hass), api_key)
+            try:
+                await api.async_validate_key()
+            except ATAuthError:
+                errors["base"] = "invalid_auth"
+            except ATApiError:
+                errors["base"] = "cannot_connect"
+            else:
+                old_key = entry.data.get(CONF_API_KEY)
+                for other in self.hass.config_entries.async_entries(DOMAIN):
+                    if other.data.get(CONF_API_KEY) == old_key:
+                        self.hass.config_entries.async_update_entry(
+                            other, data={**other.data, CONF_API_KEY: api_key}
+                        )
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_API_KEY): selector.TextSelector()}),
+            errors=errors,
+        )
+
+    # -- stop picker -------------------------------------------------------
+    async def async_step_stop_filter(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect the mode filter and a search term for the stop picker."""
+        errors: dict[str, str] = {}
+
+        if not self._stops:
+            try:
+                self._stops = await _async_fetch_stops(self.hass, self._api_key)
+            except ATAuthError:
+                errors["base"] = "invalid_auth"
+            except ATApiError:
+                errors["base"] = "cannot_connect"
+
+        if user_input is not None and not errors:
+            self._mode = user_input.get(CONF_STOP_TYPE, STOP_TYPE_ALL)
+            self._search = user_input.get(CONF_SEARCH, "") or ""
+            self._include_platforms = bool(user_input.get(CONF_INCLUDE_PLATFORMS, False))
             return await self.async_step_stop_selection()
 
-        schema = vol.Schema({
-            vol.Required(CONF_STOP_TYPE, default=self._stop_type): vol.In(
-                {k: k.capitalize() for k in STOP_TYPES}
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_STOP_TYPE, default=self._mode): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value=value, label=_MODE_LABELS[value]
+                            )
+                            for value in STOP_TYPES
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(CONF_SEARCH, default=self._search): selector.TextSelector(),
+                vol.Optional(
+                    CONF_INCLUDE_PLATFORMS, default=self._include_platforms
+                ): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="stop_filter",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"total": str(len(self._stops))},
+        )
+
+    async def async_step_stop_selection(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick the stop to monitor."""
+        matches = _filter_stops(
+            self._stops, self._mode, self._search, self._include_platforms
+        )
+        truncated = len(matches) > MAX_PICKER_RESULTS
+        shown = matches[:MAX_PICKER_RESULTS]
+        by_id = {stop.stop_id: stop for stop in shown}
+
+        if not shown:
+            return self.async_show_form(
+                step_id="stop_selection",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_stops_found"},
+                description_placeholders={"count": "0", "total": "0", "hint": ""},
             )
-        })
-
-        return self.async_show_form(step_id="stop_type_selection", data_schema=schema)
-
-    async def async_step_stop_selection(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
-        errors = {}
-
-        # Always fetch stops to ensure filtering works
-        if not self._stops_by_type:
-            try:
-                self._stops_by_type = await self._fetch_stops()
-            except Exception:
-                errors["base"] = "cannot_connect"
-                self._stops_by_type = {}
-
-        current_stop_options = self._stops_by_type.get(self._stop_type, [])
-        stop_options = {stop_id: name for stop_id, name in current_stop_options}
 
         if user_input is not None:
             stop_id = user_input[CONF_STOP_ID]
+            stop = by_id.get(stop_id)
+            if stop is None:
+                return self.async_abort(reason="unknown")
 
-            # Check if stop is already configured
-            if await self.async_set_unique_id(stop_id, raise_on_progress=False):
-                errors["base"] = "already_configured"
-            else:
-                self._data.update({
-                    CONF_STOP_TYPE: self._stop_type,
+            await self.async_set_unique_id(stop_id)
+            self._abort_if_unique_id_configured()
+
+            return self.async_create_entry(
+                title=f"AT Stop - {stop.stop_name}"
+                + (f" ({stop.stop_code})" if stop.stop_code else ""),
+                data={
+                    CONF_API_KEY: self._api_key,
                     CONF_STOP_ID: stop_id,
-                })
+                    CONF_STOP_TYPE: self._mode,
+                    CONF_STOP_NAME: stop.stop_name,
+                    CONF_STOP_CODE: stop.stop_code,
+                },
+            )
 
-                combined_stop_name = stop_options[stop_id]
-                return self.async_create_entry(
-                    title=f"AT Stop - {combined_stop_name}",
-                    data=self._data,
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_STOP_ID, default=shown[0].stop_id): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value=stop.stop_id, label=stop.label()
+                            )
+                            for stop in shown
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
                 )
-
-        schema = vol.Schema({
-            vol.Required(CONF_STOP_ID, default=next(iter(stop_options), "")):
-                vol.In(stop_options) if stop_options else str
-        })
-
+            }
+        )
+        hint = (
+            f"Only the first {MAX_PICKER_RESULTS} matches are shown - go back and "
+            "refine the search to see the rest."
+            if truncated
+            else ""
+        )
         return self.async_show_form(
             step_id="stop_selection",
             data_schema=schema,
-            errors=errors,
             description_placeholders={
-                "stop_count": str(len(stop_options)),
-                "stop_type": self._stop_type.capitalize(),
+                "count": str(len(shown)),
+                "total": str(len(matches)),
+                "hint": hint,
             },
             last_step=True,
         )
 
-    async def _fetch_stops(self):
-        session = async_get_clientsession(self.hass)
-        headers = {
-            "Cache-Control": "no-cache",
-            "Ocp-Apim-Subscription-Key": self._api_key,
-        }
-
-        async with session.get(API_STOPS_ENDPOINT, headers=headers) as response:
-            if response.status != 200:
-                return {}
-
-            data = await response.json()
-            stops = data.get("data", [])
-            stops_by_type = {t: [] for t in STOP_TYPES}
-
-            for stop in stops:
-                attributes = stop.get("attributes", {})
-                stop_code = attributes.get("stop_code", "")
-                stop_name = attributes.get("stop_name", "")
-                stop_id = stop.get("id", "")
-
-                if not stop_code or not stop_name or not stop_id:
-                    continue
-
-                stop_option = f"{stop_name} ({stop_code})"
-                code_length = len(stop_code)
-
-                stops_by_type[STOP_TYPE_ALL].append((stop_id, stop_option))
-                if code_length == 3:
-                    stops_by_type["train"].append((stop_id, stop_option))
-                elif code_length == 4:
-                    stops_by_type["bus"].append((stop_id, stop_option))
-                elif code_length == 5:
-                    stops_by_type["ferry"].append((stop_id, stop_option))
-
-            return stops_by_type
-
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
-        """Get the options flow for this handler."""
-        return AucklandTransportOptionsFlow(config_entry)
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow handler."""
+        return AucklandTransportOptionsFlow()
 
 
-class AucklandTransportOptionsFlow(config_entries.OptionsFlow):
-    """Handle Auckland Transport options."""
+_MODE_LABELS = {
+    STOP_TYPE_ALL: "All stops",
+    MODE_TRAIN: "Train stations",
+    MODE_BUS: "Bus stops",
+    MODE_FERRY: "Ferry terminals",
+}
 
-    def __init__(self, entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        super().__init__()
-        self._entry = entry
 
-    async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
-        """Manage the options."""
-        options = self._entry.options
-        
+class AucklandTransportOptionsFlow(OptionsFlow):
+    """Handle the Auckland Transport options."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Present and save the options."""
         if user_input is not None:
-            show_all_departures = user_input.get("show_all_departures", False)
-            
-            # If checkbox is unchecked but departure_qty is not in user_input,
-            # Re-show the form with the number field visible.
-            if not show_all_departures and "departure_qty" not in user_input:
-                # Checkbox was just unchecked, re-show form with number field visible
-                current_departure_qty = options.get("departure_qty")
-                default_departure_qty = current_departure_qty if current_departure_qty is not None else 4
-                
-                schema = vol.Schema({
-                    vol.Optional(
-                        "update_interval",
-                        default=user_input.get("update_interval", options.get("update_interval", DEFAULT_SCAN_INTERVAL)),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
-                    vol.Optional(
-                        CONF_DISABLE_UPDATES_START,
-                        default=user_input.get(CONF_DISABLE_UPDATES_START, options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START)),
-                    ): selector.TimeSelector(),
-                    vol.Optional(
-                        CONF_DISABLE_UPDATES_END,
-                        default=user_input.get(CONF_DISABLE_UPDATES_END, options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END)),
-                    ): selector.TimeSelector(),
-                    vol.Optional(
-                        "show_all_departures",
-                        default=False,
-                    ): bool,
-                    vol.Optional(
-                        "departure_qty",
-                        default=default_departure_qty,
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=1, 
-                            mode="box",
-                            step=1
-                        )
-                    ),        
-                })
-                
-                return self.async_show_form(step_id="init", data_schema=schema)
-            
-            # Process the form data
-            processed_data = {}
-            
-            # Copy other options
-            processed_data["update_interval"] = user_input.get("update_interval", options.get("update_interval", DEFAULT_SCAN_INTERVAL))
-            processed_data[CONF_DISABLE_UPDATES_START] = user_input.get(CONF_DISABLE_UPDATES_START, options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START))
-            processed_data[CONF_DISABLE_UPDATES_END] = user_input.get(CONF_DISABLE_UPDATES_END, options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END))
-            
-            # Handle departure_qty based on checkbox
-            if show_all_departures:
-                # If checkbox is checked, set departure_qty to None to show all
-                processed_data["departure_qty"] = None
-            else:
-                # If checkbox is not checked, use the entered value or preserve previous
-                departure_qty = user_input.get("departure_qty")
-                if departure_qty is not None:
-                    processed_data["departure_qty"] = departure_qty
-                else:
-                    # If no value provided and checkbox is unchecked, preserve previous value or use default
-                    previous_qty = options.get("departure_qty")
-                    processed_data["departure_qty"] = previous_qty if previous_qty is not None else 4
-            
-            return self.async_create_entry(title="", data=processed_data)
+            return self.async_create_entry(title="", data=user_input)
 
-        # Initial form load
-        current_departure_qty = options.get("departure_qty")
-        show_all_departures = current_departure_qty is None
-        
-        # Get the default departure_qty value for the number field
-        default_departure_qty = current_departure_qty if current_departure_qty is not None else 4
+        options = self.config_entry.options
 
-        # Build schema conditionally - only include departure_qty if checkbox is unchecked
-        schema_dict = {
-            vol.Optional(
-                "update_interval",
-                default=options.get("update_interval", DEFAULT_SCAN_INTERVAL),
-            ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
-            vol.Optional(
-                CONF_DISABLE_UPDATES_START,
-                default=options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START),
-            ): selector.TimeSelector(),
-            vol.Optional(
-                CONF_DISABLE_UPDATES_END,
-                default=options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END),
-            ): selector.TimeSelector(),
-            vol.Optional(
-                "show_all_departures",
-                default=show_all_departures,
-            ): bool,
-        }
-        
-        # Only include departure_qty field if checkbox is unchecked
-        if not show_all_departures:
-            schema_dict[vol.Optional(
-                "departure_qty",
-                default=default_departure_qty,
-            )] = selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=1, 
-                    mode="box",
-                    step=1
-                )
-            )
-
-        schema = vol.Schema(schema_dict)
-
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_DEPARTURE_SENSORS,
+                    default=options.get(
+                        CONF_DEPARTURE_SENSORS, DEFAULT_DEPARTURE_SENSORS
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=MAX_DEPARTURE_SENSORS,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CONF_HIDE_ARRIVALS,
+                    default=options.get(CONF_HIDE_ARRIVALS, DEFAULT_HIDE_ARRIVALS),
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CONF_INCLUDE_SCHOOL_BUSES,
+                    default=options.get(
+                        CONF_INCLUDE_SCHOOL_BUSES, DEFAULT_INCLUDE_SCHOOL_BUSES
+                    ),
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CONF_ONLY_ACTIVE_ALERTS,
+                    default=options.get(
+                        CONF_ONLY_ACTIVE_ALERTS, DEFAULT_ONLY_ACTIVE_ALERTS
+                    ),
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CONF_LEGACY_ATTRIBUTES,
+                    default=options.get(
+                        CONF_LEGACY_ATTRIBUTES, DEFAULT_LEGACY_ATTRIBUTES
+                    ),
+                ): selector.BooleanSelector(),
+            }
+        )
         return self.async_show_form(step_id="init", data_schema=schema)
