@@ -1,0 +1,12 @@
+refresh:
+  name: Refresh
+  description: >-
+    Force an immediate refresh of every configured stop. Uses one shared realtime
+    API call regardless of how many stops are configured.
+
+reload_static_data:
+  name: Reload static data
+  description: >-
+    Re-download the GTFS stop and route lists and discard cached timetables. Run
+    this after Auckland Transport publishes a new timetable if the integration has
+    not picked it up yet.
