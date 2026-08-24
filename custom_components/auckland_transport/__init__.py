@@ -1,141 +1,134 @@
-"""Auckland Transport integration."""
-import asyncio
+"""The Auckland Transport integration."""
+
+from __future__ import annotations
+
 import logging
-from datetime import timedelta
 
-import aiohttp
-import async_timeout
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY, Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv
+import voluptuous as vol
 
+from .api import ATApiError
 from .const import (
-    API_STOPS_ENDPOINT,
+    CONF_API_KEY,
+    CONF_STOP_CODE,
+    CONF_STOP_NAME,
+    CONF_STOP_TYPE,
     DOMAIN,
-    UPDATE_INTERVAL,
+    STOP_TYPE_ALL,
 )
+from .coordinator import ATRuntime, StopCoordinator, get_runtime, release_runtime
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+
+SERVICE_REFRESH = "refresh"
+SERVICE_RELOAD_STATIC = "reload_static_data"
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the Auckland Transport component."""
-    # Home Assistant handles translations automatically
+    """Set up the integration and its services."""
+    _async_register_services(hass)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Auckland Transport from a config entry."""
     api_key = entry.data[CONF_API_KEY]
-    
-    session = async_get_clientsession(hass)
-    coordinator = AucklandTransportDataUpdateCoordinator(hass, session, api_key)
-    
+    runtime = get_runtime(hass, api_key)
+
+    coordinator = StopCoordinator(hass, entry, runtime)
+    # Raises ConfigEntryNotReady itself on failure, and ConfigEntryAuthFailed when
+    # the coordinator reports a rejected key, which starts the reauth flow.
     await coordinator.async_config_entry_first_refresh()
-    
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
-    
+
+    # Cache the resolved stop name so the entry title and picker stay meaningful
+    # even when the API is unreachable at startup.
+    stop = coordinator.data.stop
+    if entry.data.get(CONF_STOP_NAME) != stop.stop_name:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_STOP_NAME: stop.stop_name,
+                CONF_STOP_CODE: stop.stop_code,
+            },
+        )
+
+    hass.data.setdefault(DOMAIN, {}).setdefault("entries", {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    
-    # Set up options update listener
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-    
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    _async_register_services(hass)
     return True
-
-
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-        
-    return unload_ok
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        hass.data.get(DOMAIN, {}).get("entries", {}).pop(entry.entry_id, None)
+        release_runtime(hass, entry.data[CONF_API_KEY], entry.entry_id)
+    return unloaded
 
 
-class AucklandTransportDataUpdateCoordinator(DataUpdateCoordinator):
-    """Class to manage fetching Auckland Transport data."""
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate older config entries forward."""
+    if entry.version >= 2:
+        return True
 
-    def __init__(self, hass: HomeAssistant, session: aiohttp.ClientSession, api_key: str):
-        """Initialize the coordinator."""
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            update_interval=timedelta(seconds=UPDATE_INTERVAL),
-        )
-        self.session = session
-        self.api_key = api_key
-        self._stops_data = None
+    # v1 entries only stored api_key, stop_type and stop_id. The stop id format is
+    # unchanged, so all that is needed is filling in the newer optional keys.
+    data = {**entry.data}
+    data.setdefault(CONF_STOP_TYPE, STOP_TYPE_ALL)
+    data.setdefault(CONF_STOP_NAME, "")
+    data.setdefault(CONF_STOP_CODE, "")
+    hass.config_entries.async_update_entry(entry, data=data, version=2)
+    _LOGGER.debug("Migrated %s to config entry version 2", entry.title)
+    return True
 
-    async def _async_update_data(self):
-        """Fetch data from Auckland Transport API."""
-        try:
-            async with async_timeout.timeout(10):
-                # For now, we just return existing stops data if we've already fetched it
-                if self._stops_data:
-                    return self._stops_data
-                
-                # Fetch stops data
-                self._stops_data = await self._fetch_stops_data()
-                return self._stops_data
-                
-        except (asyncio.TimeoutError, aiohttp.ClientError) as error:
-            raise UpdateFailed(f"Error communicating with API: {error}") from error
 
-    async def _fetch_stops_data(self):
-        """Fetch stops data from Auckland Transport API."""
-        headers = {
-            "Cache-Control": "no-cache",
-            "Ocp-Apim-Subscription-Key": self.api_key,
-        }
-        
-        async with self.session.get(API_STOPS_ENDPOINT, headers=headers) as response:
-            if response.status != 200:
-                _LOGGER.error("Error fetching stops data: %s", response.status)
-                return []
-                
-            data = await response.json()
-            return data.get("data", [])
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry so option changes take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
-    async def get_stops(self, stop_type=None):
-        """Get filtered stops based on type."""
-        if self._stops_data is None:
-            await self.async_refresh()
-            
-        if not self._stops_data:
-            return []
-            
-        if stop_type is None or stop_type == "all":
-            return self._stops_data
-            
-        filtered_stops = []
-        
-        for stop in self._stops_data:
-            attributes = stop.get("attributes", {})
-            stop_code = attributes.get("stop_code", "")
-            
-            if not stop_code:
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register the integration services once."""
+    if hass.services.has_service(DOMAIN, SERVICE_REFRESH):
+        return
+
+    async def _handle_refresh(call: ServiceCall) -> None:
+        """Force an immediate refresh of every configured stop."""
+        for coordinator in _coordinators(hass):
+            await coordinator.async_request_refresh()
+
+    async def _handle_reload_static(call: ServiceCall) -> None:
+        """Re-download the GTFS stop and route lists."""
+        seen: set[int] = set()
+        for coordinator in _coordinators(hass):
+            runtime: ATRuntime = coordinator.runtime
+            if id(runtime) in seen:
                 continue
-                
-            # Filter based on stop code pattern
-            code_length = len(stop_code)
-            
-            if stop_type == "train" and code_length == 3:
-                filtered_stops.append(stop)
-            elif stop_type == "bus" and code_length == 4:
-                filtered_stops.append(stop)
-            elif stop_type == "ferry" and code_length == 5:
-                filtered_stops.append(stop)
-                
-        return filtered_stops
+            seen.add(id(runtime))
+            try:
+                await runtime.async_ensure_static(force=True)
+            except ATApiError as err:
+                _LOGGER.error("Could not reload GTFS static data: %s", err)
+        for coordinator in _coordinators(hass):
+            coordinator.runtime.invalidate_schedule(coordinator.stop_id)
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, SERVICE_REFRESH, _handle_refresh, schema=vol.Schema({}))
+    hass.services.async_register(
+        DOMAIN, SERVICE_RELOAD_STATIC, _handle_reload_static, schema=vol.Schema({})
+    )
+
+
+def _coordinators(hass: HomeAssistant) -> list[StopCoordinator]:
+    """Return every loaded stop coordinator."""
+    return list(hass.data.get(DOMAIN, {}).get("entries", {}).values())
