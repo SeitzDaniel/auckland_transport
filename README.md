@@ -4,7 +4,6 @@ Custom component for Home Assistant which uses the [Auckland Transport API](http
 - Monitor real-time bus, train, and ferry departure times.
 - Display the next trip as a sensor.
 - Access detailed upcoming trips via attributes.
-- Customize update intervals and quiet hours.
 
 ## Installation
 ### HACS (recommended)
@@ -26,43 +25,36 @@ If you prefer to instal manually, copy custom_components/auckland_transport to y
 ### 2. Setup your first stop
 * Enter your API key and Submit.
 
-<img width="481" height="260" alt="image" src="https://github.com/user-attachments/assets/032b450e-66f4-4ce6-807a-ced9348553a7" />
+<img width="572" height="310" alt="image" src="https://github.com/user-attachments/assets/4401f4bf-e59e-4264-a29b-e993d3c1d574" />
 
-* You can filter by Stop Type.
 
-<img width="320" height="349" alt="image" src="https://github.com/user-attachments/assets/2499c7de-6b74-4df8-aad1-6bcb9e935520" />
+* You can can filter and search for your stop.
 
-* Select your stop from the list and submit.
+<img width="568" height="480" alt="image" src="https://github.com/user-attachments/assets/9c6d334a-3c96-45c8-b0ab-55a64261707c" />
 
-<img width="316" height="226" alt="image" src="https://github.com/user-attachments/assets/6676fa2c-c96b-436c-adf3-3d4f923fec2b" />
 
-## Sensor/Attributes
+## Device/Sensor/Attributes
 
-#### The main sensor is always the next trip.
-* Within attributes it will list upcoming trips.
+#### Each stop is setup as a device.
+* With multiple sensors and attributes
 
-<img width="438" height="812" alt="image" src="https://github.com/user-attachments/assets/f83568be-ba5c-47cc-aeb0-9aadcd88d90b" />
-
-#### The secondary sensor is tracking the next trip gps location.
-* Attributes include the following.
-  
-<img width="574" height="823" alt="image" src="https://github.com/user-attachments/assets/35960deb-664c-4d6b-ad4e-1cd362713718" />
+<img width="1325" height="618" alt="image" src="https://github.com/user-attachments/assets/c1361b8b-2783-4318-806f-c1625569ff87" />
 
 
 ## ⚙️ Additional Settings
 
-<img width="624" height="261" alt="image" src="https://github.com/user-attachments/assets/f12aa157-e7ea-437f-95ef-312f8c99662b" />
+Additional settings can be configured for each device.
 
-You can configure the update interval, disable API calls during specified times, and choose how many upcoming departures to include, or include all of them in the attributes.
+<img width="598" height="679" alt="image" src="https://github.com/user-attachments/assets/67c9a75b-97ec-4e22-a6a0-66a56691fc9e" />
 
-<img width="421" height="456" alt="image" src="https://github.com/user-attachments/assets/0d8b589b-796f-4901-8dc1-3885f0b22bbd" />
 
 
 ## Custom Card
 
 To visualize your stops you can get the custom card from [here](https://github.com/SeitzDaniel/auckland-transport-card).
 
-<img width="812" height="357" alt="image" src="https://github.com/user-attachments/assets/5d345527-2932-43ee-a3f7-a729b431c12c" />
+<img width="837" height="766" alt="image" src="https://github.com/user-attachments/assets/6f58db0f-fe1d-4754-bb9c-3ffec736eeb7" />
+
 
 
 ## License
