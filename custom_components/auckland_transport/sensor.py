@@ -1,708 +1,424 @@
-"""Support for Auckland Transport sensors."""
+"""Sensor platform for Auckland Transport.
+
+Entity layout, per configured stop:
+
+===========================================  ==========================================
+Entity                                       State
+===========================================  ==========================================
+``sensor.auckland_transport_<stop>``          next boardable departure (timestamp)
+``sensor.…_<stop>_departures``                remaining departures today
+``sensor.…_<stop>_minutes_to_departure``      minutes until the next departure
+``sensor.…_<stop>_departure_1..N``            one entity per upcoming departure
+``sensor.…_<stop>_service_alerts``            number of active alerts
+``sensor.…_<stop>_vehicle_location``          "lat, lon" of the next vehicle
+===========================================  ==========================================
+
+Splitting the board across entities is what keeps every state under the
+recorder's 16384 byte attribute ceiling; :mod:`.attributes` enforces the rest.
+"""
+
+from __future__ import annotations
+
 import logging
-from datetime import datetime, timedelta, time
-import pytz
-from typing import Any, Dict, Optional, List
+from datetime import datetime
+from typing import Any
 
-import aiohttp
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import UnitOfTime
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
+from homeassistant.util import dt as dt_util
 
-from .const import (
-    API_BASE_URL,
-    API_REALTIME_COMBINED,
-    ATTR_LOCATION_TYPE,
-    ATTR_STOP_CODE,
-    ATTR_STOP_LAT,
-    ATTR_STOP_LON,
-    ATTR_STOP_NAME,
-    ATTR_WHEELCHAIR_BOARDING,
-    CONF_DISABLE_UPDATES_END,
-    CONF_DISABLE_UPDATES_START,
-    CONF_STOP_ID,
-    DEFAULT_DISABLE_UPDATES_END,
-    DEFAULT_DISABLE_UPDATES_START,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    UPDATE_INTERVAL,
+from .attributes import (
+    build_board_attributes,
+    compact_alert,
+    fit_attributes,
+    legacy_alert_attributes,
 )
+from .const import (
+    ATTR_ALERTS,
+    ATTR_SCHEMA_VERSION,
+    ATTR_STOP_CODE,
+    ATTR_STOP_NAME,
+    ATTR_TRANSPORT_TYPE,
+    CONF_DEPARTURE_SENSORS,
+    CONF_LEGACY_ATTRIBUTES,
+    DEFAULT_DEPARTURE_SENSORS,
+    DEFAULT_LEGACY_ATTRIBUTES,
+    DOMAIN,
+    MAX_DEPARTURE_SENSORS,
+    MODE_ICONS,
+    MODE_UNKNOWN,
+    SCHEMA_VERSION,
+)
+from .coordinator import StopCoordinator
+from .entity import ATEntity
+from .model import Departure
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up Auckland Transport sensor based on a config entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    api_key = entry.data[CONF_API_KEY]
-    stop_id = entry.data[CONF_STOP_ID]
-    
-    # Get update interval from options or use default
-    update_interval = entry.options.get("update_interval", DEFAULT_SCAN_INTERVAL)
-    
-    # Get disable period from options or use defaults
-    disable_updates_start = entry.options.get(CONF_DISABLE_UPDATES_START, DEFAULT_DISABLE_UPDATES_START)
-    disable_updates_end = entry.options.get(CONF_DISABLE_UPDATES_END, DEFAULT_DISABLE_UPDATES_END)
-    
-    # Get departure quantity from options (None means show all)
-    departure_qty = entry.options.get("departure_qty")
+    """Set up the Auckland Transport sensors for a config entry."""
+    coordinator: StopCoordinator = hass.data[DOMAIN]["entries"][entry.entry_id]
 
-    _LOGGER.debug("Configured disable period: %s to %s", disable_updates_start, disable_updates_end)
-    
-    # Find stop details in coordinator data
-    stop_data = None
-    
-    for stop in coordinator.data:
-        if stop.get("id") == stop_id:
-            stop_data = stop
-            break
-    
-    if not stop_data:
-        _LOGGER.error("Could not find stop data for stop_id: %s", stop_id)
-        return
-    
-    # Create real-time data coordinator with configured update interval
-    realtime_coordinator = RealtimeDataCoordinator(
-        hass, 
-        api_key, 
-        stop_id,
-        update_interval,
-        disable_updates_start,
-        disable_updates_end
-    )
-    
-    # Initial data fetch - force immediate refresh
-    await realtime_coordinator.async_refresh()
-    
-    # Create both sensor entities - departure time sensor and vehicle location sensor
-    async_add_entities([
-        AucklandTransportSensor(coordinator, realtime_coordinator, api_key, stop_data, departure_qty),
-        AucklandTransportVehicleLocationSensor(coordinator, realtime_coordinator, api_key, stop_data)
-    ])
+    entities: list[SensorEntity] = [
+        StopBoardSensor(coordinator),
+        DepartureCountSensor(coordinator),
+        MinutesToDepartureSensor(coordinator),
+        ServiceAlertsSensor(coordinator),
+        VehicleLocationSensor(coordinator),
+    ]
+
+    count = entry.options.get(CONF_DEPARTURE_SENSORS, DEFAULT_DEPARTURE_SENSORS)
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = DEFAULT_DEPARTURE_SENSORS
+    for index in range(1, max(0, min(MAX_DEPARTURE_SENSORS, count)) + 1):
+        entities.append(SingleDepartureSensor(coordinator, index))
+
+    async_add_entities(entities)
 
 
-class RealtimeDataCoordinator(DataUpdateCoordinator):
-    """Class to manage fetching Auckland Transport real-time data."""
+class StopBoardSensor(ATEntity, SensorEntity):
+    """The main departure board sensor.
 
-    def __init__(
-        self, 
-        hass: HomeAssistant, 
-        api_key: str, 
-        stop_id: str, 
-        update_interval: int = 60,
-        disable_updates_start: str = DEFAULT_DISABLE_UPDATES_START,
-        disable_updates_end: str = DEFAULT_DISABLE_UPDATES_END
-    ):
-        """Initialize the data coordinator."""
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=f"{DOMAIN}_{stop_id}_realtime",
-            update_interval=timedelta(seconds=update_interval),
-        )
-        self._api_key = api_key
-        self._stop_id = stop_id
-        self.data = {"arrivals": [], "next_departure": None, "vehicle_locations": {}}
-        
-        # Parse disable period times
-        try:
-            self._disable_updates_start = self._parse_time_string(disable_updates_start)
-            self._disable_updates_end = self._parse_time_string(disable_updates_end)
-        except ValueError:
-            _LOGGER.error(
-                "Invalid time format for disable updates period. Using defaults instead."
-            )
-            self._disable_updates_start = self._parse_time_string(DEFAULT_DISABLE_UPDATES_START)
-            self._disable_updates_end = self._parse_time_string(DEFAULT_DISABLE_UPDATES_END)
+    State is the expected departure time of the next boardable service as a
+    timestamp, which Home Assistant renders as a live relative time.
+    """
 
-    def _parse_time_string(self, time_str: str) -> time:
-        """Parse time string in various formats to time object."""
-        _LOGGER.debug("Parsing time string: %s", time_str)
-        
-        # Handle HA's time selector format which can contain seconds
-        if ":" in time_str:
-            parts = time_str.split(":")
-            if len(parts) > 2:
-                # Format with seconds (HH:MM:SS)
-                time_str = ":".join(parts[0:2])  # Just keep hours and minutes
-        
-        try:
-            # First try 24-hour format (HH:MM)
-            result = datetime.strptime(time_str, "%H:%M").time()
-            _LOGGER.debug("Parsed time as 24-hour format: %s", result.strftime("%H:%M"))
-            return result
-        except ValueError:
-            try:
-                # Check if there's an AM/PM indicator
-                if " " in time_str and ("AM" in time_str.upper() or "PM" in time_str.upper()):
-                    result = datetime.strptime(time_str, "%I:%M %p").time()
-                    _LOGGER.debug("Parsed time as 12-hour format: %s (24h: %s)", 
-                                time_str, result.strftime("%H:%M"))
-                    return result
-                else:
-                    # Try military time without colon (e.g. "1300")
-                    if time_str.isdigit() and len(time_str) == 4:
-                        hours = int(time_str[:2])
-                        minutes = int(time_str[2:])
-                        result = time(hour=hours, minute=minutes)
-                        _LOGGER.debug("Parsed time as military format: %s", result.strftime("%H:%M"))
-                        return result
-                    raise ValueError(f"Unrecognized time format: {time_str}")
-            except Exception as e:
-                _LOGGER.error("Failed to parse time string: %s - %s", time_str, str(e))
-                # Fall back to default values
-                raise ValueError(f"Could not parse time format: {time_str}")
-        
-    def _is_update_disabled(self) -> bool:
-        """Check if updates should be disabled based on current time."""
-        current_time = datetime.now().time()
-        
-        # Handle case when disable period spans midnight
-        if self._disable_updates_start > self._disable_updates_end:
-            is_disabled = current_time >= self._disable_updates_start or current_time < self._disable_updates_end
-            _LOGGER.debug(
-                "Checking disabled status (overnight period): current=%s, start=%s, end=%s, disabled=%s",
-                current_time.strftime("%H:%M"),
-                self._disable_updates_start.strftime("%H:%M"),
-                self._disable_updates_end.strftime("%H:%M"),
-                is_disabled
-            )
-            return is_disabled
-        
-        # Normal case
-        is_disabled = self._disable_updates_start <= current_time < self._disable_updates_end
-        _LOGGER.debug(
-            "Checking disabled status: current=%s, start=%s, end=%s, disabled=%s",
-            current_time.strftime("%H:%M"),
-            self._disable_updates_start.strftime("%H:%M"),
-            self._disable_updates_end.strftime("%H:%M"),
-            is_disabled
-        )
-        return is_disabled
-
-    async def _async_update_data(self):
-        """Fetch data from Auckland Transport API."""
-        # Skip update if within disabled period
-        if self._is_update_disabled():
-            _LOGGER.debug(
-                "Skipping update as current time is within the disabled updates period"
-            )
-            # Return current data to maintain state
-            return self.data
-
-        # Get current date in YYYY-MM-DD format
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        
-        # Get current hour in 24-hour format
-        current_hour = datetime.now().hour
-        
-        # Create API endpoint
-        api_endpoint = f"{API_BASE_URL}/stops/{self._stop_id}/stoptrips"
-        
-        # Set up query parameters
-        params = {
-            "filter[date]": current_date,
-            "filter[start_hour]": current_hour,
-            "filter[hour_range]": 24
-        }
-        
-        # Set up headers
-        headers = {"Ocp-Apim-Subscription-Key": self._api_key}
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_endpoint, params=params, headers=headers) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        
-                        # Extract all trips
-                        all_trips = self._extract_trips(result)
-                        
-                        # Extract all trip IDs for filtering realtime data
-                        trip_ids = [trip.get("trip_id") for trip in all_trips if trip.get("trip_id")]
-                        
-                        # Fetch combined realtime data (trip updates + vehicle positions)
-                        if trip_ids:
-                            realtime_data = await self._fetch_combined_realtime_data(session, trip_ids)
-                            
-                            # Update each trip with its realtime details
-                            for trip in all_trips:
-                                trip_id = trip.get("trip_id")
-                                if trip_id and trip_id in realtime_data["trip_updates"]:
-                                    trip.update(realtime_data["trip_updates"][trip_id])
-                            
-                            vehicle_locations = realtime_data["vehicle_locations"]
-                        else:
-                            vehicle_locations = {}
-                        
-                        # Process trips with delay information
-                        processed_data = self._process_trips_with_delay(all_trips)
-                        
-                        # Add vehicle locations to the result
-                        processed_data["vehicle_locations"] = vehicle_locations
-                        
-                        return processed_data
-                    else:
-                        _LOGGER.error(
-                            "Error fetching real-time data: %s (%s)",
-                            response.status,
-                            await response.text(),
-                        )
-                        return {"arrivals": [], "next_departure": None, "vehicle_locations": {}}
-        except Exception as err:
-            _LOGGER.error("Error fetching real-time data: %s", err)
-            return {"arrivals": [], "next_departure": None, "vehicle_locations": {}}
-    
-    def _extract_trips(self, response_data):
-        """Extract trip data from API response."""
-        trips = []
-        
-        if "data" not in response_data:
-            return trips
-        
-        for trip in response_data["data"]:
-            attributes = trip.get("attributes", {})
-            
-            trip_data = {
-                "arrival_time": attributes.get("arrival_time"),
-                "scheduled_departure_time": attributes.get("departure_time"),
-                "trip_headsign": attributes.get("trip_headsign"),
-                "stop_headsign": attributes.get("stop_headsign"),
-                "route_id": attributes.get("route_id"),
-                "trip_id": attributes.get("trip_id"),
-            }
-            
-            trips.append(trip_data)
-        
-        return trips
-    
-    async def _fetch_combined_realtime_data(self, session, trip_ids):
-        """Fetch combined real-time data (trip updates + vehicle positions) in one API call."""
-        # Use the combined realtime endpoint with trip filter
-        params = {"tripid": ",".join(trip_ids)}
-        headers = {"Cache-Control": "no-cache", "Ocp-Apim-Subscription-Key": self._api_key}
-        
-        trip_updates = {}
-        vehicle_locations = {}
-        
-        try:
-            async with session.get(API_REALTIME_COMBINED, params=params, headers=headers) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    
-                    if result.get("status") == "OK" and "response" in result:
-                        entities = result["response"].get("entity", [])
-                        
-                        for entity in entities:
-                            entity_id = entity.get("id")
-                            
-                            # Process trip updates
-                            if "trip_update" in entity:
-                                trip_update = entity["trip_update"]
-                                trip_id = entity_id
-                                
-                                # Extract license plate
-                                license_plate = None
-                                if "vehicle" in trip_update and "license_plate" in trip_update["vehicle"]:
-                                    license_plate = trip_update["vehicle"]["license_plate"]
-                                
-                                # Extract delay in seconds
-                                delay_seconds = None
-                                if "delay" in trip_update:
-                                    delay_seconds = trip_update["delay"]
-                                elif "stop_time_update" in trip_update and "arrival" in trip_update["stop_time_update"]:
-                                    delay_seconds = trip_update["stop_time_update"]["arrival"].get("delay")
-                                
-                                trip_updates[trip_id] = {
-                                    "license_plate": license_plate,
-                                    "delay_seconds": delay_seconds
-                                }
-                            
-                            # Process vehicle positions
-                            if "vehicle" in entity:
-                                vehicle = entity["vehicle"]
-                                
-                                # Extract position data
-                                position = vehicle.get("position", {})
-                                trip = vehicle.get("trip", {})
-                                
-                                vehicle_data = {
-                                    "latitude": position.get("latitude"),
-                                    "longitude": position.get("longitude"),
-                                    "bearing": position.get("bearing"),
-                                    "speed": position.get("speed"),
-                                    "timestamp": entity.get("timestamp"),
-                                    "trip_id": trip.get("trip_id"),
-                                    "route_id": trip.get("route_id"),
-                                    "vehicle_id": vehicle.get("vehicle", {}).get("id"),
-                                    "license_plate": vehicle.get("vehicle", {}).get("license_plate"),
-                                }
-                                
-                                # Store by trip_id for easy lookup
-                                trip_id = trip.get("trip_id")
-                                if trip_id:
-                                    vehicle_locations[trip_id] = vehicle_data
-                        
-                else:
-                    _LOGGER.error(
-                        "Error fetching combined realtime data: %s (%s)",
-                        response.status,
-                        await response.text(),
-                    )
-        except Exception as err:
-            _LOGGER.error("Error fetching combined realtime data: %s", err)
-        
-        return {
-            "trip_updates": trip_updates,
-            "vehicle_locations": vehicle_locations
-        }
-    
-    def _process_trips_with_delay(self, trips):
-        """Process trips considering delay information."""
-        arrivals = []
-        next_departure = None
-        
-        # Get current time for filtering
-        now = datetime.now()
-        
-        # Filter and process trips
-        for trip in trips:
-            scheduled_departure_time = trip.get("scheduled_departure_time")
-            
-            if not scheduled_departure_time:
-                continue
-            
-            # Parse the scheduled time
-            try:
-                hour, minute, second = map(int, scheduled_departure_time.split(':'))
-                
-                # Handle extended transit time format (24+ hours)
-                days_to_add = 0
-                if hour >= 24:
-                    # Calculate days to add and normalize hour
-                    days_to_add = hour // 24
-                    hour = hour % 24
-                
-                # Create the scheduled datetime
-                scheduled_dt = datetime(
-                    now.year, now.month, now.day, 
-                    hour, minute, second
-                ) + timedelta(days=days_to_add)
-                
-                # Calculate actual departure time with delay
-                delay_seconds = trip.get("delay_seconds", 0) or 0
-                actual_dt = scheduled_dt + timedelta(seconds=delay_seconds)
-                
-                # Skip trips that have already departed (considering delay)
-                # Do this check BEFORE potentially adding a day
-                if actual_dt < now and days_to_add == 0:
-                    # This trip has already departed today, skip it
-                    continue
-                
-                # If we get here and the time is still in the past with days_to_add,
-                # it means it's a next-day service that hasn't departed yet
-                
-                # Normalize the scheduled time to standard 24-hour format for display
-                trip["scheduled_departure_time"] = scheduled_dt.strftime("%H:%M:%S")
-                
-                # Format the actual departure time
-                trip["actual_departure_time"] = actual_dt.strftime("%H:%M:%S")
-                
-                # Store the datetime object for proper sorting
-                trip["actual_departure_datetime"] = actual_dt
-                
-                arrivals.append(trip)
-            except Exception as e:
-                _LOGGER.error("Error calculating actual departure time for trip %s: %s", trip.get("trip_id"), e)
-                # Skip trips with parsing errors to avoid incorrect ordering
-                continue
-        
-        # Sort arrivals by actual departure datetime
-        arrivals.sort(key=lambda x: x.get("actual_departure_datetime", datetime.max))
-        
-        # Set the first valid trip as next_departure
-        if arrivals:
-            next_departure = arrivals[0]
-        
-        return {
-            "arrivals": arrivals,
-            "next_departure": next_departure,
-            "vehicle_locations": {}
-        }
-
-
-class AucklandTransportSensor(CoordinatorEntity, SensorEntity):
-    """Auckland Transport sensor."""
-
-    def __init__(self, stop_coordinator, realtime_coordinator, api_key, stop_data, departure_qty):
-        """Initialize the sensor."""
-        # Initialize with the realtime coordinator
-        super().__init__(realtime_coordinator)
-        
-        self._stop_coordinator = stop_coordinator
-        self._realtime_coordinator = realtime_coordinator
-        self._api_key = api_key
-        self._stop_data = stop_data
-        self._stop_id = stop_data.get("id")
-        self._attributes = stop_data.get("attributes", {})
-        self._stop_name = self._attributes.get("stop_name", "Unknown Stop")
-        self._stop_code = self._attributes.get("stop_code", "")
-        self._departure_qty = departure_qty  # Store departure_qty as instance variable
-        
-        # Set initial value from coordinator data if available
-        data = self._realtime_coordinator.data if self._realtime_coordinator.data else {}
-        next_departure = data.get("next_departure")
-        if next_departure:
-            # Use actual departure time if available, otherwise use scheduled
-            self._attr_native_value = next_departure.get("actual_departure_time") or next_departure.get("scheduled_departure_time", "Unknown")
-        else:
-            self._attr_native_value = "No upcoming departures"
-        
-        # Determine transport type based on stop_code
-        self._transport_type = "unknown"
-        if self._stop_code:
-            code_length = len(self._stop_code)
-            if code_length == 3:
-                self._transport_type = "train"
-            elif code_length == 4:
-                self._transport_type = "bus"
-            elif code_length == 5:
-                self._transport_type = "ferry"
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return f"Auckland Transport {self._stop_name}"
+    _attr_name = None
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
     def unique_id(self) -> str:
-        """Return a unique ID."""
+        """Return the v0.2 unique id so existing entities are reused."""
         return f"auckland_transport_{self._stop_id}"
 
     @property
-    def icon(self) -> str:
-        """Return the icon based on transport type."""
-        if self._transport_type == "train":
-            return "mdi:train"
-        elif self._transport_type == "bus":
-            return "mdi:bus"
-        elif self._transport_type == "ferry":
-            return "mdi:ferry"
-        return "mdi:transit-connection"
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        data = self._realtime_coordinator.data
-        
-        next_departure = data.get("next_departure")
-        if next_departure:
-            # Use actual departure time (which already includes delay) if available
-            self._attr_native_value = next_departure.get("actual_departure_time") or next_departure.get("scheduled_departure_time", "Unknown")
-        else:
-            self._attr_native_value = "No upcoming departures"
-        
-        self.async_write_ha_state()
+    def native_value(self) -> datetime | None:
+        """Return when the next boardable service is expected."""
+        snapshot = self.snapshot
+        if not snapshot or not (departure := snapshot.next_departure):
+            return None
+        return dt_util.as_utc(departure.expected)
 
     @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return the state attributes."""
-        attrs = {
-            ATTR_STOP_NAME: self._stop_name,
-            ATTR_STOP_CODE: self._stop_code,
-            "transport_type": self._transport_type,
-        }
-        
-        # Add all attributes from the stop data
-        if self._attributes:
-            for key, value in self._attributes.items():
-                if key not in [ATTR_STOP_NAME, ATTR_STOP_CODE]:
-                    attrs[key] = value
-        
-        # Add realtime data attributes
-        data = self._realtime_coordinator.data
-        arrivals = data.get("arrivals", [])
-        
-        # Add disabled updates period information
-        if hasattr(self._realtime_coordinator, "_disable_updates_start") and hasattr(self._realtime_coordinator, "_disable_updates_end"):
-            # Format as 24-hour format for consistency
-            attrs["start_of_API_break"] = self._realtime_coordinator._disable_updates_start.strftime("%H:%M")
-            attrs["end_of_API_break"] = self._realtime_coordinator._disable_updates_end.strftime("%H:%M")
-            attrs["API_currently_disabled"] = self._realtime_coordinator._is_update_disabled()
-        
-        if arrivals:
-            attrs["remaining_departures_for_today"] = len(arrivals)
-            
-            # Add numbered departures as attributes
-            for idx, arrival in enumerate(arrivals, 1):
-                prefix = f"departure_{idx}"
-                
-                # Include scheduled and actual times
-                attrs[f"{prefix}_scheduled_time"] = arrival.get("scheduled_departure_time")
-                attrs[f"{prefix}_actual_time"] = arrival.get("actual_departure_time", arrival.get("scheduled_departure_time"))
-                
-                # Add delay information if available
-                delay_seconds = arrival.get("delay_seconds")
-                if delay_seconds is not None:
-                    attrs[f"{prefix}_delay_in_seconds"] = delay_seconds
-                
-                # Add license plate if available
-                license_plate = arrival.get("license_plate")
-                if license_plate:
-                    attrs[f"{prefix}_license_plate"] = license_plate
-                
-                attrs[f"{prefix}_headsign"] = arrival.get("trip_headsign")
-                attrs[f"{prefix}_route"] = arrival.get("route_id")
-                attrs[f"{prefix}_trip_id"] = arrival.get("trip_id")
-                
-                # Use departure_qty to control how many departures are getting added
-                # If departure_qty is None, show all departures (don't break)
-                if self._departure_qty is not None and idx >= self._departure_qty:
-                    break
-        else:
-            attrs["remaining_departures_for_today"] = 0
-        
-        return attrs
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the board plus the legacy flat attributes, size limited."""
+        snapshot = self.snapshot
+        if not snapshot:
+            return {}
+        options = self.coordinator.entry.options
+        return build_board_attributes(
+            snapshot,
+            legacy=bool(options.get(CONF_LEGACY_ATTRIBUTES, DEFAULT_LEGACY_ATTRIBUTES)),
+        )
 
 
-class AucklandTransportVehicleLocationSensor(CoordinatorEntity, SensorEntity):
-    """Auckland Transport vehicle location sensor for map display."""
+class MinutesToDepartureSensor(ATEntity, SensorEntity):
+    """Minutes until the next boardable departure."""
 
-    def __init__(self, stop_coordinator, realtime_coordinator, api_key, stop_data):
-        """Initialize the vehicle location sensor."""
-        # Initialize with the realtime coordinator
-        super().__init__(realtime_coordinator)
-        
-        self._stop_coordinator = stop_coordinator
-        self._realtime_coordinator = realtime_coordinator
-        self._api_key = api_key
-        self._stop_data = stop_data
-        self._stop_id = stop_data.get("id")
-        self._attributes = stop_data.get("attributes", {})
-        self._stop_name = self._attributes.get("stop_name", "Unknown Stop")
-        self._stop_code = self._attributes.get("stop_code", "")
-        
-        # Set initial value
-        self._attr_native_value = "No vehicle location"
-        
-        # Determine transport type based on stop_code
-        self._transport_type = "unknown"
-        if self._stop_code:
-            code_length = len(self._stop_code)
-            if code_length == 3:
-                self._transport_type = "train"
-            elif code_length == 4:
-                self._transport_type = "bus"
-            elif code_length == 5:
-                self._transport_type = "ferry"
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return f"Auckland Transport {self._stop_name} Vehicle Location"
+    _attr_name = "Minutes to departure"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:clock-outline"
 
     @property
     def unique_id(self) -> str:
-        """Return a unique ID."""
-        return f"auckland_transport_{self._stop_id}_vehicle_location"
+        """Return a stable unique id."""
+        return f"auckland_transport_{self._stop_id}_minutes"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return whole minutes until the next boardable departure."""
+        snapshot = self.snapshot
+        if not snapshot or not (departure := snapshot.next_departure):
+            return None
+        return max(0, departure.minutes_until(snapshot.generated_at))
+
+
+class DepartureCountSensor(ATEntity, SensorEntity):
+    """Number of departures still to come today."""
+
+    _attr_name = "Departures"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:format-list-numbered"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a stable unique id."""
+        return f"auckland_transport_{self._stop_id}_departure_count"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the number of remaining departures."""
+        return len(self.snapshot.departures) if self.snapshot else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return a breakdown of the remaining departures."""
+        snapshot = self.snapshot
+        if not snapshot:
+            return {}
+        by_route: dict[str, int] = {}
+        for departure in snapshot.departures:
+            by_route[departure.route_name] = by_route.get(departure.route_name, 0) + 1
+        attrs = {
+            "scheduled_trips_today": snapshot.scheduled_today,
+            "cancelled_departures": snapshot.cancelled_count,
+            "realtime_departures": sum(1 for d in snapshot.departures if d.realtime),
+            "by_route": dict(sorted(by_route.items(), key=lambda kv: -kv[1])[:25]),
+        }
+        return fit_attributes(attrs, shrink_order=("by_route",))
+
+
+class SingleDepartureSensor(ATEntity, SensorEntity):
+    """One entity per upcoming departure, so no single state carries the board."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: StopCoordinator, index: int) -> None:
+        """Store the 1-based position this entity tracks."""
+        super().__init__(coordinator)
+        self._index = index
+        self._attr_name = f"Departure {index}"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a stable unique id."""
+        return f"auckland_transport_{self._stop_id}_departure_{self._index}"
+
+    @property
+    def _departure(self) -> Departure | None:
+        """Return the departure at this position, if it exists."""
+        snapshot = self.snapshot
+        if not snapshot or len(snapshot.departures) < self._index:
+            return None
+        return snapshot.departures[self._index - 1]
 
     @property
     def icon(self) -> str:
-        """Return the icon based on transport type."""
-        if self._transport_type == "train":
-            return "mdi:train"
-        elif self._transport_type == "bus":
-            return "mdi:bus"
-        elif self._transport_type == "ferry":
-            return "mdi:ferry"
-        return "mdi:map-marker"
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        data = self._realtime_coordinator.data
-        
-        # Get the next departure to find its vehicle location
-        next_departure = data.get("next_departure")
-        vehicle_locations = data.get("vehicle_locations", {})
-        
-        if next_departure and vehicle_locations:
-            trip_id = next_departure.get("trip_id")
-            if trip_id and trip_id in vehicle_locations:
-                vehicle_data = vehicle_locations[trip_id]
-                latitude = vehicle_data.get("latitude")
-                longitude = vehicle_data.get("longitude")
-                
-                if latitude is not None and longitude is not None:
-                    self._attr_native_value = f"{latitude}, {longitude}"
-                else:
-                    self._attr_native_value = "Location unavailable"
-            else:
-                self._attr_native_value = "Vehicle not tracked"
-        else:
-            self._attr_native_value = "No vehicle location"
-        
-        self.async_write_ha_state()
+        """Return an icon matching this departure's own mode."""
+        departure = self._departure
+        mode = departure.mode if departure else self._mode
+        return MODE_ICONS.get(mode, MODE_ICONS[MODE_UNKNOWN])
 
     @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return the state attributes."""
-        attrs = {
-            ATTR_STOP_NAME: self._stop_name,
-            ATTR_STOP_CODE: self._stop_code,
-            "transport_type": self._transport_type,
+    def native_value(self) -> datetime | None:
+        """Return the expected departure time."""
+        departure = self._departure
+        return dt_util.as_utc(departure.expected) if departure else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the full detail of this one departure."""
+        departure = self._departure
+        snapshot = self.snapshot
+        if not departure or not snapshot:
+            return {}
+
+        attrs: dict[str, Any] = {
+            "position": self._index,
+            "route": departure.route_name,
+            "route_id": departure.route_id,
+            "destination": departure.destination,
+            "mode": departure.mode,
+            "scheduled_time": departure.scheduled.strftime("%H:%M:%S"),
+            "expected_time": departure.expected.strftime("%H:%M:%S"),
+            "scheduled": dt_util.as_utc(departure.scheduled).isoformat(),
+            "minutes": departure.minutes_until(snapshot.generated_at),
+            "status": departure.status,
+            "realtime": departure.realtime,
+            "boarding": departure.boarding,
+            "cancelled": departure.cancelled,
+            "trip_id": departure.trip_id,
+            ATTR_STOP_NAME: snapshot.stop.stop_name,
+            ATTR_STOP_CODE: snapshot.stop.stop_code,
         }
-        
-        # Get the next departure to find its vehicle location
-        data = self._realtime_coordinator.data
-        next_departure = data.get("next_departure")
-        vehicle_locations = data.get("vehicle_locations", {})
-        
-        if next_departure and vehicle_locations:
-            trip_id = next_departure.get("trip_id")
-            route_id = next_departure.get("route_id")
-            headsign = next_departure.get("trip_headsign")
-            
-            attrs["trip_id"] = trip_id
-            attrs["route_id"] = route_id
-            attrs["headsign"] = headsign
-            
-            if trip_id and trip_id in vehicle_locations:
-                vehicle_data = vehicle_locations[trip_id]
-                
-                # Add GPS coordinates for Home Assistant map card
-                latitude = vehicle_data.get("latitude")
-                longitude = vehicle_data.get("longitude")
-                
-                if latitude is not None and longitude is not None:
-                    attrs["latitude"] = latitude
-                    attrs["longitude"] = longitude
-                    attrs["gps_accuracy"] = 0  # GPS accuracy for map display
-                
-                # Add additional vehicle information
-                if vehicle_data.get("bearing") is not None:
-                    attrs["bearing"] = vehicle_data.get("bearing")
-                
-                if vehicle_data.get("speed") is not None:
-                    attrs["speed"] = vehicle_data.get("speed")
-                
-                if vehicle_data.get("timestamp"):
-                    attrs["last_update"] = vehicle_data.get("timestamp")
-                
-                if vehicle_data.get("vehicle_id"):
-                    attrs["vehicle_id"] = vehicle_data.get("vehicle_id")
-                
-                if vehicle_data.get("license_plate"):
-                    attrs["license_plate"] = vehicle_data.get("license_plate")
-        
+        if departure.delay is not None:
+            attrs["delay_seconds"] = departure.delay
+            attrs["delay_minutes"] = round(departure.delay / 60, 1)
+        if departure.platform:
+            attrs["platform"] = departure.platform
+            attrs["platform_stop_name"] = departure.stop_name
+        if departure.route_color:
+            attrs["route_color"] = f"#{departure.route_color}"
+            attrs["route_text_color"] = f"#{departure.route_text_color or 'FFFFFF'}"
+        if departure.direction_id is not None:
+            attrs["direction_id"] = departure.direction_id
+        if departure.alert_effect:
+            attrs["alert_effect"] = departure.alert_effect
+            attrs["alert_severity"] = departure.alert_severity
+        if departure.reason:
+            attrs["reason"] = departure.reason
+        if departure.alternative:
+            attrs["alternative"] = departure.alternative
+        if departure.skipped:
+            attrs["stop_skipped"] = True
+
+        if vehicle := departure.vehicle:
+            attrs["vehicle_id"] = vehicle.vehicle_id
+            if vehicle.license_plate:
+                attrs["license_plate"] = vehicle.license_plate
+            if vehicle.occupancy_label:
+                attrs["occupancy"] = vehicle.occupancy_label
+                attrs["occupancy_status"] = vehicle.occupancy
+            if vehicle.has_position:
+                # Named so the entity can be dropped straight onto a map card.
+                attrs["latitude"] = vehicle.latitude
+                attrs["longitude"] = vehicle.longitude
+                attrs["gps_accuracy"] = 0
+            if vehicle.bearing is not None:
+                attrs["bearing"] = vehicle.bearing
+            if vehicle.speed is not None:
+                attrs["speed"] = round(vehicle.speed * 3.6, 1)
+
+        if departure.alerts:
+            attrs[ATTR_ALERTS] = [compact_alert(item) for item in departure.alerts[:3]]
+
+        return fit_attributes(attrs)
+
+
+class ServiceAlertsSensor(ATEntity, SensorEntity):
+    """Active service alerts affecting this stop."""
+
+    _attr_name = "Service alerts"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def unique_id(self) -> str:
+        """Return a stable unique id."""
+        return f"auckland_transport_{self._stop_id}_alerts"
+
+    @property
+    def icon(self) -> str:
+        """Return an icon reflecting whether anything is wrong."""
+        snapshot = self.snapshot
+        if snapshot and snapshot.alerts:
+            severe = any(alert.severity == "SEVERE" for alert in snapshot.alerts)
+            return "mdi:alert-octagon" if severe else "mdi:alert"
+        return "mdi:check-circle-outline"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the number of active alerts."""
+        return len(self.snapshot.alerts) if self.snapshot else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the alerts in full, trimmed to the attribute budget."""
+        snapshot = self.snapshot
+        if not snapshot:
+            return {}
+        attrs: dict[str, Any] = {
+            ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
+            ATTR_STOP_NAME: snapshot.stop.stop_name,
+            ATTR_STOP_CODE: snapshot.stop.stop_code,
+            "severe_count": sum(1 for a in snapshot.alerts if a.severity == "SEVERE"),
+            "effects": sorted({a.effect for a in snapshot.alerts if a.effect}),
+            ATTR_ALERTS: [compact_alert(a, full_text=True) for a in snapshot.alerts],
+        }
+        attrs.update(legacy_alert_attributes(snapshot.alerts))
+        return fit_attributes(attrs, shrink_order=(ATTR_ALERTS,), minimum=0)
+
+
+class VehicleLocationSensor(ATEntity, SensorEntity):
+    """Position of the vehicle serving the next departure.
+
+    Kept with the v0.2 name and unique id so the old card's map keeps working.
+    """
+
+    _attr_name = "Vehicle location"
+
+    @property
+    def unique_id(self) -> str:
+        """Return the v0.2 unique id so the existing entity is reused."""
+        return f"auckland_transport_{self._stop_id}_vehicle_location"
+
+    @property
+    def _tracked(self) -> Departure | None:
+        """Return the first upcoming departure that has a live vehicle."""
+        snapshot = self.snapshot
+        if not snapshot:
+            return None
+        for departure in snapshot.departures:
+            if departure.vehicle and departure.vehicle.has_position:
+                return departure
+        return None
+
+    @property
+    def icon(self) -> str:
+        """Return an icon matching the tracked vehicle's mode."""
+        departure = self._tracked
+        mode = departure.mode if departure else self._mode
+        return MODE_ICONS.get(mode, "mdi:map-marker")
+
+    @property
+    def native_value(self) -> str:
+        """Return the tracked vehicle's coordinates as ``lat, lon``."""
+        departure = self._tracked
+        if not departure or not departure.vehicle:
+            return "No vehicle location"
+        vehicle = departure.vehicle
+        return f"{vehicle.latitude}, {vehicle.longitude}"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return map friendly attributes for the tracked vehicle."""
+        snapshot = self.snapshot
+        if not snapshot:
+            return {}
+
+        attrs: dict[str, Any] = {
+            ATTR_STOP_NAME: snapshot.stop.stop_name,
+            ATTR_STOP_CODE: snapshot.stop.stop_code,
+            ATTR_TRANSPORT_TYPE: snapshot.mode,
+        }
+
+        departure = self._tracked
+        if not departure or not departure.vehicle:
+            attrs["tracking"] = False
+            return attrs
+
+        vehicle = departure.vehicle
+        attrs.update(
+            {
+                "tracking": True,
+                "latitude": vehicle.latitude,
+                "longitude": vehicle.longitude,
+                "gps_accuracy": 0,
+                "trip_id": departure.trip_id,
+                "route_id": departure.route_id,
+                "route": departure.route_name,
+                # The v0.2 card reads ``headsign``.
+                "headsign": departure.destination,
+                "destination": departure.destination,
+                "mode": departure.mode,
+                "expected_time": departure.expected.strftime("%H:%M:%S"),
+                "minutes": departure.minutes_until(snapshot.generated_at),
+            }
+        )
+        if departure.platform:
+            attrs["platform"] = departure.platform
+        if vehicle.bearing is not None:
+            attrs["bearing"] = vehicle.bearing
+        if vehicle.speed is not None:
+            attrs["speed"] = round(vehicle.speed * 3.6, 1)
+        if vehicle.timestamp:
+            attrs["last_update"] = vehicle.timestamp
+        if vehicle.vehicle_id:
+            attrs["vehicle_id"] = vehicle.vehicle_id
+        if vehicle.license_plate:
+            attrs["license_plate"] = vehicle.license_plate
+        if vehicle.occupancy_label:
+            attrs["occupancy"] = vehicle.occupancy_label
         return attrs
