@@ -1,62 +1,90 @@
 {
-    "config": {
-      "step": {
-        "user": {
-          "title": "Auckland Transport",
-          "description": "Choose an existing API key or enter a new one.",
-          "data": {
-            "api_key_choice": "API Key Selection"
-          }
-        },
-        "new_api_key": {
-          "title": "Enter New API Key",
-          "description": "If you don't already have an API key, you can get one from here https://dev-portal.at.govt.nz/signup.",
-          "data": {
-            "api_key": "API Key"
-          }
-        },
-        "stop_type_selection": {
-          "title": "Stop Type",
-          "description": "Filters stops by type.",
-          "data": {
-            "stop_type": "Stop Type"
-          }
-        },
-        "stop_selection": {
-          "title": "Select Transport Stop",
-          "description": "Found {stop_count} {stop_type} stops. Select from below.",
-          "data": {
-            "stop_id": "Transport Stop"
-          }
+  "config": {
+    "step": {
+      "user": {
+        "title": "Auckland Transport",
+        "description": "Pick an API key that is already configured, or enter a new one.",
+        "data": {
+          "api_key_choice": "API key"
         }
       },
-      "error": {
-        "invalid_auth": "Invalid API key",
-        "cannot_connect": "Failed to connect to Auckland Transport API",
-        "unknown": "Unexpected error",
-        "already_configured": "This stop is already configured. Choose a diffrent one."
+      "new_api_key": {
+        "title": "Enter your API key",
+        "description": "Sign up for a free Auckland Transport subscription key at https://dev-portal.at.govt.nz/signup and subscribe to the GTFS and Realtime APIs.",
+        "data": {
+          "api_key": "API key"
+        }
       },
-      "abort": {
-        "already_configured": "This stop is already configured. Choose a diffrent one."
+      "reauth_confirm": {
+        "title": "Update your API key",
+        "description": "Auckland Transport rejected the stored key. Enter a valid one; every stop using the old key will be updated.",
+        "data": {
+          "api_key": "API key"
+        }
+      },
+      "stop_filter": {
+        "title": "Find your stop",
+        "description": "{total} stops are published in the current timetable. Filter by mode and search by stop name or stop code.",
+        "data": {
+          "stop_type": "Mode",
+          "search": "Search",
+          "include_platforms": "Show individual platforms"
+        },
+        "data_description": {
+          "search": "Part of the stop name, or the stop code printed on the sign.",
+          "include_platforms": "Off by default. A station covers all of its platforms in one entity and reports the platform per departure, which is usually what you want."
+        }
+      },
+      "stop_selection": {
+        "title": "Select your stop",
+        "description": "{count} of {total} matching stops. {hint}",
+        "data": {
+          "stop_id": "Stop"
+        }
       }
     },
-    "options": {
-      "step": {
-        "init": {
-          "title": "Auckland Transport Options",
-          "description": "Setting a lower update interval value will result in more frequent updates but may increase API usage. Please consult the Auckland Transport API documentation for detailed usage guidelines. Additionally, you can reduce unnecessary API calls by disabling updates during periods when no trips are likely scheduled.",
-          "data": {
-            "update_interval": "Update interval (seconds)",
-            "disable_updates_start": "Disable API Calls From",
-            "disable_updates_end": "Disable API Calls To",
-            "show_all_departures": "Include all departures",
-            "departure_qty": "Included departures"
-          },
-          "data_description": {
-            "show_all_departures": "When disabled, you can specify how many departures to include. If you have just disabled this option, click “Submit” to load the departure section.",
-            "departure_qty": "Min=1"
-          }
+    "error": {
+      "invalid_auth": "That API key was rejected. Check it is subscribed to both the GTFS and Realtime APIs.",
+      "cannot_connect": "Could not reach the Auckland Transport API.",
+      "no_stops_found": "No stops matched. Go back and widen the search.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This stop is already configured.",
+      "reauth_successful": "The API key was updated.",
+      "unknown": "Unexpected error."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Auckland Transport options",
+        "description": "Realtime data refreshes every 60 seconds using a single shared API call, no matter how many stops you have configured, and timetables are downloaded once per stop per day. The main sensor always carries the next 40 departures.",
+        "data": {
+          "departure_sensors": "Individual departure sensors",
+          "hide_arrivals": "Hide services that only drop off",
+          "include_school_buses": "Include school buses",
+          "only_active_alerts": "Only show currently active alerts",
+          "legacy_attributes": "Emit legacy card attributes"
+        },
+        "data_description": {
+          "departure_sensors": "Creates sensor.…_departure_1 through _departure_N, each holding the full detail of one departure. Set to 0 to disable.",
+          "hide_arrivals": "Some trips terminate at your stop and cannot be boarded.",
+          "include_school_buses": "School routes are the S-prefixed services.",
+          "only_active_alerts": "Auckland Transport publishes alerts weeks in advance; turning this off shows those too.",
+          "legacy_attributes": "Keeps the flat departure_1_* attributes that version 0.2 of the Lovelace card reads. Leave on unless you have upgraded the card."
         }
       }
     }
+  },
+  "services": {
+    "refresh": {
+      "name": "Refresh",
+      "description": "Force an immediate refresh of every configured stop."
+    },
+    "reload_static_data": {
+      "name": "Reload static data",
+      "description": "Re-download the GTFS stop and route lists and discard cached timetables."
+    }
   }
+}
