@@ -10,7 +10,7 @@
       },
       "new_api_key": {
         "title": "Enter your API key",
-        "description": "Sign up for a free Auckland Transport subscription key at https://dev-portal.at.govt.nz/signup and subscribe to the GTFS and Realtime APIs.",
+        "description": "Sign up for a free Auckland Transport subscription key at [the developer portal]({signup_url}) and subscribe to the GTFS and Realtime APIs.",
         "data": {
           "api_key": "API key"
         }
