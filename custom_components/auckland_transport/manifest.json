@@ -9,5 +9,6 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/SeitzDaniel/auckland_transport/issues",
   "requirements": [],
+  "categories": ["transport"],
   "version": "0.3.0"
 }
