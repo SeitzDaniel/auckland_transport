@@ -178,7 +178,12 @@ class AucklandTransportConfigFlow(ConfigFlow, domain=DOMAIN):
             {vol.Required(CONF_API_KEY): selector.TextSelector()}
         )
         return self.async_show_form(
-            step_id="new_api_key", data_schema=schema, errors=errors
+            step_id="new_api_key",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "signup_url": "https://dev-portal.at.govt.nz/signup"
+            },
         )
 
     # -- reauth ------------------------------------------------------------
