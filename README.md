@@ -6,16 +6,11 @@ Custom component for Home Assistant which uses the [Auckland Transport API](http
 - Access detailed upcoming trips via attributes.
 
 ## Installation
-### HACS (recommended)
+### Home Assistant Marketplace (recommended)
 
-1. [Install HACS](https://hacs.xyz/docs/use/download/download/), if you did not already
-2. [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=SeitzDaniel&repository=auckland_transport&category=integration)
-3. Install the Auckland Transport integration
-4. Restart Home Assistant
-
-### Manually
-
-If you prefer to instal manually, copy custom_components/auckland_transport to your installation's config/custom_components directory.
+1. [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=SeitzDaniel&repository=auckland_transport&category=integration)
+2. Select **Install**.
+3. Follow the prompts to complete the installation. If prompted, restart Home Assistant.
 
 ## Configuration
 
@@ -51,7 +46,7 @@ Additional settings can be configured for each device.
 
 ## Custom Card
 
-To visualize your stops you can get the custom card from [here](https://github.com/SeitzDaniel/auckland-transport-card).
+To visualize your stops, a custom card is included.
 
 <img width="837" height="766" alt="image" src="https://github.com/user-attachments/assets/6f58db0f-fe1d-4754-bb9c-3ffec736eeb7" />
 
