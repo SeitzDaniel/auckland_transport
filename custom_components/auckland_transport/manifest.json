@@ -5,6 +5,7 @@
   "codeowners": ["@SeitzDaniel"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
+  "after_dependencies": ["lovelace"],
   "documentation": "https://github.com/SeitzDaniel/auckland_transport",
   "integration_type": "service",
   "iot_class": "cloud_polling",
