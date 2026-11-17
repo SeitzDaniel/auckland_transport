@@ -198,3 +198,15 @@ ATTR_SCHEMA_VERSION: Final = "schema_version"
 # Bumped whenever the shape of ``departures`` / ``alerts`` changes so the card can
 # adapt. The card treats "no schema_version" as the old flat-attribute layout.
 SCHEMA_VERSION: Final = 2
+
+# ---------------------------------------------------------------------------
+# Frontend / Lovelace resource registration
+# ---------------------------------------------------------------------------
+URL_BASE: Final = "/api/auckland_transport_static"
+JSMODULES: Final = [
+    {
+        "name": "Auckland Transport Card",
+        "filename": "auckland-transport-card.js",
+        "version": "0.4.0",
+    }
+]
