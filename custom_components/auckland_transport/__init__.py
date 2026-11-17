@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+from aiohttp import web
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.http import HomeAssistantView
+from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
 
 from .api import ATApiError
@@ -18,6 +22,7 @@ from .const import (
     CONF_STOP_TYPE,
     DOMAIN,
     STOP_TYPE_ALL,
+    URL_BASE,
 )
 from .coordinator import ATRuntime, StopCoordinator, get_runtime, release_runtime
 
@@ -30,10 +35,43 @@ SERVICE_RELOAD_STATIC = "reload_static_data"
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+# Allowed JS filenames (no path traversal)
+ALLOWED_JS_FILES = frozenset({
+    "auckland-transport-card.js",
+})
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+
+class AucklandTransportStaticView(HomeAssistantView):
+    """Serve Auckland Transport card JavaScript files."""
+
+    url = f"{URL_BASE}/{{filename:.+}}"
+    name = "auckland_transport_static"
+    requires_auth = False
+
+    def __init__(self, component_dir: Path) -> None:
+        """Initialize the view with the component directory."""
+        self._component_dir = component_dir
+
+    async def get(self, request: web.Request, **kwargs) -> web.Response:
+        """Serve the requested file if allowed."""
+        filename = request.match_info.get("filename", "")
+        if filename not in ALLOWED_JS_FILES:
+            return self.json_message("Not found", 404)
+        file_path = self._component_dir / "frontend" / filename
+        if not file_path.is_file():
+            return self.json_message("Not found", 404)
+        return web.FileResponse(file_path)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration and its services."""
     _async_register_services(hass)
+    
+    # Register static file view at startup so card URLs work before config entry
+    component_dir = Path(__file__).parent
+    hass.http.register_view(AucklandTransportStaticView(component_dir))
+    _LOGGER.debug("Registered static view for frontend files at %s", URL_BASE)
+    
     return True
 
 
@@ -41,6 +79,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Auckland Transport from a config entry."""
     api_key = entry.data[CONF_API_KEY]
     runtime = get_runtime(hass, api_key)
+
+    # Register the static view (redundant if async_setup already ran, but ensures it exists)
+    component_dir = Path(__file__).parent
+    hass.http.register_view(AucklandTransportStaticView(component_dir))
+
+    # Register card URLs as Lovelace resources (storage mode) so dashboards load them
+    from .frontend import LovelaceResourceRegistration
+    registrar = LovelaceResourceRegistration(hass)
+    await registrar.async_register()
 
     coordinator = StopCoordinator(hass, entry, runtime)
     # Raises ConfigEntryNotReady itself on failure, and ConfigEntryAuthFailed when
