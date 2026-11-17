@@ -2,6 +2,6 @@
   "name": "Auckland Transport",
   "content_in_root": false,
   "zip_release": false,
-  "filename": "auckland_transport",
-  "render_readme": true
+  "render_readme": true,
+  "country": "NZ"
 }
