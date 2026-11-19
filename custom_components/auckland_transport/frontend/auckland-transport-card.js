@@ -711,8 +711,10 @@ class AucklandTransportCard extends HTMLElement {
     const parts = [];
     if (cfg.header_logo) {
       const size = Number(cfg.header_logo_size) || 40;
+      // Use local icon served via the integration's static endpoint
+      const iconPath = '/api/auckland_transport_static/icon.png';
       parts.push(
-        `<img src="https://raw.githubusercontent.com/SeitzDaniel/brands/master/custom_integrations/auckland_transport/icon.png"
+        `<img src="${iconPath}"
               alt="Auckland Transport" width="${size}" height="${size}" style="width:${size}px;height:${size}px">`,
       );
     }
