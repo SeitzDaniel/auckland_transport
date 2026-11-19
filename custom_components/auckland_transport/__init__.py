@@ -35,14 +35,15 @@ SERVICE_RELOAD_STATIC = "reload_static_data"
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-# Allowed JS filenames (no path traversal)
-ALLOWED_JS_FILES = frozenset({
+# Allowed static filenames (no path traversal)
+ALLOWED_STATIC_FILES = frozenset({
     "auckland-transport-card.js",
+    "icon.png",
 })
 
 
 class AucklandTransportStaticView(HomeAssistantView):
-    """Serve Auckland Transport card JavaScript files."""
+    """Serve Auckland Transport card JavaScript and static asset files."""
 
     url = f"{URL_BASE}/{{filename:.+}}"
     name = "auckland_transport_static"
@@ -55,9 +56,13 @@ class AucklandTransportStaticView(HomeAssistantView):
     async def get(self, request: web.Request, **kwargs) -> web.Response:
         """Serve the requested file if allowed."""
         filename = request.match_info.get("filename", "")
-        if filename not in ALLOWED_JS_FILES:
+        if filename not in ALLOWED_STATIC_FILES:
             return self.json_message("Not found", 404)
-        file_path = self._component_dir / "frontend" / filename
+        
+        # JavaScript files from frontend, icon from brand
+        folder = "brand" if filename == "icon.png" else "frontend"
+        file_path = self._component_dir / folder / filename
+        
         if not file_path.is_file():
             return self.json_message("Not found", 404)
         return web.FileResponse(file_path)
