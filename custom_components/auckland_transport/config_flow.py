@@ -23,7 +23,6 @@ from .const import (
     CONF_DEPARTURE_SENSORS,
     CONF_HIDE_ARRIVALS,
     CONF_INCLUDE_SCHOOL_BUSES,
-    CONF_LEGACY_ATTRIBUTES,
     CONF_ONLY_ACTIVE_ALERTS,
     CONF_STOP_CODE,
     CONF_STOP_ID,
@@ -32,7 +31,6 @@ from .const import (
     DEFAULT_DEPARTURE_SENSORS,
     DEFAULT_HIDE_ARRIVALS,
     DEFAULT_INCLUDE_SCHOOL_BUSES,
-    DEFAULT_LEGACY_ATTRIBUTES,
     DEFAULT_ONLY_ACTIVE_ALERTS,
     DOMAIN,
     MAX_DEPARTURE_SENSORS,
@@ -399,12 +397,6 @@ class AucklandTransportOptionsFlow(OptionsFlow):
                     CONF_ONLY_ACTIVE_ALERTS,
                     default=options.get(
                         CONF_ONLY_ACTIVE_ALERTS, DEFAULT_ONLY_ACTIVE_ALERTS
-                    ),
-                ): selector.BooleanSelector(),
-                vol.Optional(
-                    CONF_LEGACY_ATTRIBUTES,
-                    default=options.get(
-                        CONF_LEGACY_ATTRIBUTES, DEFAULT_LEGACY_ATTRIBUTES
                     ),
                 ): selector.BooleanSelector(),
             }
