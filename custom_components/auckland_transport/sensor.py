@@ -38,7 +38,6 @@ from .attributes import (
     build_board_attributes,
     compact_alert,
     fit_attributes,
-    legacy_alert_attributes,
 )
 from .const import (
     ATTR_ALERTS,
@@ -47,9 +46,7 @@ from .const import (
     ATTR_STOP_NAME,
     ATTR_TRANSPORT_TYPE,
     CONF_DEPARTURE_SENSORS,
-    CONF_LEGACY_ATTRIBUTES,
     DEFAULT_DEPARTURE_SENSORS,
-    DEFAULT_LEGACY_ATTRIBUTES,
     DOMAIN,
     MAX_DEPARTURE_SENSORS,
     MODE_ICONS,
@@ -100,7 +97,7 @@ class StopBoardSensor(ATEntity, SensorEntity):
 
     @property
     def unique_id(self) -> str:
-        """Return the v0.2 unique id so existing entities are reused."""
+        """Return a stable unique id so existing entities are reused."""
         return f"auckland_transport_{self._stop_id}"
 
     @property
@@ -113,15 +110,11 @@ class StopBoardSensor(ATEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the board plus the legacy flat attributes, size limited."""
+        """Return the board attributes."""
         snapshot = self.snapshot
         if not snapshot:
             return {}
-        options = self.coordinator.entry.options
-        return build_board_attributes(
-            snapshot,
-            legacy=bool(options.get(CONF_LEGACY_ATTRIBUTES, DEFAULT_LEGACY_ATTRIBUTES)),
-        )
+        return build_board_attributes(snapshot)
 
 
 class MinutesToDepartureSensor(ATEntity, SensorEntity):
@@ -327,21 +320,17 @@ class ServiceAlertsSensor(ATEntity, SensorEntity):
             "effects": sorted({a.effect for a in snapshot.alerts if a.effect}),
             ATTR_ALERTS: [compact_alert(a, full_text=True) for a in snapshot.alerts],
         }
-        attrs.update(legacy_alert_attributes(snapshot.alerts))
         return fit_attributes(attrs, shrink_order=(ATTR_ALERTS,), minimum=0)
 
 
 class VehicleLocationSensor(ATEntity, SensorEntity):
-    """Position of the vehicle serving the next departure.
-
-    Kept with the v0.2 name and unique id so the old card's map keeps working.
-    """
+    """Position of the vehicle serving the next departure."""
 
     _attr_name = "Vehicle location"
 
     @property
     def unique_id(self) -> str:
-        """Return the v0.2 unique id so the existing entity is reused."""
+        """Return a stable unique id so existing entities are reused."""
         return f"auckland_transport_{self._stop_id}_vehicle_location"
 
     @property
@@ -399,7 +388,6 @@ class VehicleLocationSensor(ATEntity, SensorEntity):
                 "trip_id": departure.trip_id,
                 "route_id": departure.route_id,
                 "route": departure.route_name,
-                # The v0.2 card reads ``headsign``.
                 "headsign": departure.destination,
                 "destination": departure.destination,
                 "mode": departure.mode,
