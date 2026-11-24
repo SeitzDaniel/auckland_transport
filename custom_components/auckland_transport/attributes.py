@@ -31,8 +31,6 @@ from .const import (
     ATTR_TRANSPORT_TYPE,
     ATTR_WHEELCHAIR_BOARDING,
     BOARD_DEPARTURE_LIMIT,
-    LEGACY_ATTR_ALERTS,
-    LEGACY_ATTR_DEPARTURES,
     MAX_ALERT_TEXT,
     SCHEMA_VERSION,
 )
@@ -194,55 +192,6 @@ def compact_alert(alert: Alert, *, full_text: bool = False) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Backwards compatibility with the v0.2 card
-# ---------------------------------------------------------------------------
-def legacy_departure_attributes(
-    departures: list[Departure], limit: int = LEGACY_ATTR_DEPARTURES
-) -> dict[str, Any]:
-    """Emit the flat ``departure_N_*`` attributes the v0.2 card reads.
-
-    Deliberately bounded: an unbounded version of exactly these keys is what blew
-    the recorder's attribute limit. The card walks the numbered keys until it
-    finds a gap, so a bounded set works unchanged.
-    """
-    attrs: dict[str, Any] = {}
-    for index, departure in enumerate(departures[:limit], start=1):
-        prefix = f"departure_{index}"
-        attrs[f"{prefix}_scheduled_time"] = departure.scheduled.strftime("%H:%M:%S")
-        attrs[f"{prefix}_actual_time"] = departure.expected.strftime("%H:%M:%S")
-        if departure.delay is not None:
-            attrs[f"{prefix}_delay_in_seconds"] = departure.delay
-        attrs[f"{prefix}_headsign"] = departure.destination
-        attrs[f"{prefix}_route"] = departure.route_id
-        attrs[f"{prefix}_trip_id"] = departure.trip_id
-        if departure.vehicle and departure.vehicle.license_plate:
-            attrs[f"{prefix}_license_plate"] = departure.vehicle.license_plate
-    return attrs
-
-
-def legacy_alert_attributes(
-    alerts: list[Alert], limit: int = LEGACY_ATTR_ALERTS
-) -> dict[str, Any]:
-    """Emit the flat ``alert_N_*`` attributes the v0.2 card reads."""
-    attrs: dict[str, Any] = {"service_alerts_count": min(len(alerts), limit)}
-    for index, alert in enumerate(alerts[:limit], start=1):
-        prefix = f"alert_{index}"
-        attrs[f"{prefix}_header"] = alert.header
-        description = alert.description
-        if len(description) > MAX_ALERT_TEXT:
-            description = description[: MAX_ALERT_TEXT - 1].rstrip() + "…"
-        attrs[f"{prefix}_description"] = description
-        attrs[f"{prefix}_cause"] = alert.cause or ""
-        attrs[f"{prefix}_effect"] = alert.effect or ""
-        attrs[f"{prefix}_status"] = alert.severity or ""
-        if alert.route_ids:
-            attrs[f"{prefix}_affected_routes"] = ", ".join(sorted(alert.route_ids)[:6])
-        if alert.effect_detail:
-            attrs[f"{prefix}_resolved_by"] = alert.effect_detail
-    return attrs
-
-
-# ---------------------------------------------------------------------------
 # The main sensor's attribute payload
 # ---------------------------------------------------------------------------
 MAX_ALERTS_IN_ATTRS = 5
@@ -270,15 +219,8 @@ def stop_attributes(snapshot: StopSnapshot) -> dict[str, Any]:
 
 def build_board_attributes(
     snapshot: StopSnapshot,
-    *,
-    legacy: bool = True,
 ) -> dict[str, Any]:
     """Build the main sensor's attributes.
-
-    Emits both layouts so either version of the Lovelace card works:
-
-    * ``departures`` / ``alerts`` with ``schema_version: 2`` for the current card;
-    * the flat ``departure_N_*`` and ``alert_N_*`` keys the v0.2 card reads.
 
     The summary list is fixed at :data:`BOARD_DEPARTURE_LIMIT` entries. The result
     is always passed through :func:`fit_attributes`, so the payload cannot exceed
@@ -297,7 +239,6 @@ def build_board_attributes(
     attrs["routes"] = sorted(snapshot.route_ids)[:25]
 
     if departure := snapshot.next_departure:
-        # The value the v0.2 sensor exposed as its state.
         attrs["next_departure_time"] = departure.expected.strftime("%H:%M:%S")
         attrs["next_departure_in_minutes"] = departure.minutes_until(now)
         attrs["next_departure_route"] = departure.route_name
@@ -312,9 +253,5 @@ def build_board_attributes(
     attrs[ATTR_ALERTS] = [
         compact_alert(item) for item in snapshot.alerts[:MAX_ALERTS_IN_ATTRS]
     ]
-
-    if legacy:
-        attrs.update(legacy_departure_attributes(snapshot.departures))
-        attrs.update(legacy_alert_attributes(snapshot.alerts))
 
     return fit_attributes(attrs)
