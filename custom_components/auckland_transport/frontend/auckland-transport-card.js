@@ -2,21 +2,14 @@
   Auckland Transport Card
   Type: custom:auckland-transport-card
 
-  Works with both integration versions:
-
-  * v0.3 and newer publish `schema_version: 2` plus a compact `departures` array
-    on the stop sensor. That path gives platforms, official route colours, live
-    occupancy, cancellations and the reason/alternative for a disruption.
-  * v0.2 published flat `departure_1_*` attributes. When no `schema_version` is
-    present the card falls back to reading those, so upgrading the card alone
-    still works.
-
-  Every configuration option from v0.2 is still honoured.
+  Displays departure information from the Auckland Transport integration v0.3+
+  with platforms, official route colours, live occupancy, cancellations and
+  service alerts.
 */
 
 /* global customElements, HTMLElement, document, window, CustomEvent */
 
-const CARD_VERSION = 'v0.3.0';
+const CARD_VERSION = 'v0.4.0';
 
 // ---------------------------------------------------------------------------
 // Short attribute keys used by the v0.3 integration (see attributes.py)
@@ -100,7 +93,7 @@ const DEFAULTS = {
   title: undefined,
   max_rows: undefined,
   filter: undefined,
-  layout: 'rows', // 'rows' = v0.3 board, 'table' = the v0.2 look
+  layout: 'rows', // 'rows' = departure board, 'table' = classic table view
   // Header
   header_logo: true,
   header_logo_size: 40,
@@ -152,7 +145,7 @@ function normaliseColor(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Reading a departure board out of an entity, whichever integration wrote it
+// Reading a departure board from an entity
 // ---------------------------------------------------------------------------
 
 /** Parse "HH:MM" or "HH:MM:SS" into minutes past midnight, or null. */
@@ -178,23 +171,13 @@ function minutesUntilClockTime(text, now = new Date()) {
   return delta;
 }
 
-function statusFromDelay(delaySeconds, minutes) {
-  if (minutes !== null && minutes <= 0) return 'departing';
-  if (minutes !== null && minutes <= 1) return 'arriving';
-  if (delaySeconds === undefined || delaySeconds === null) return 'scheduled';
-  if (delaySeconds > 60) return 'late';
-  if (delaySeconds < -60) return 'early';
-  return 'on_time';
-}
-
 /**
- * Read the v0.3 compact `departures` array.
+ * Read the compact `departures` array from the integration.
  *
  * The countdown is derived from the wall-clock departure time rather than the
- * minute count the integration stored, so it stays correct between polls and
- * cannot claim every service is leaving "now" if the state goes stale.
+ * minute count the integration stored, so it stays correct between polls.
  */
-function readModernBoard(attrs, ageMinutes) {
+function readBoard(attrs, ageMinutes) {
   return (attrs.departures || []).map((row) => {
     const live = minutesUntilClockTime(row[K.expected] || row[K.scheduled]);
     const stored = Number(row[K.minutes]);
@@ -226,80 +209,21 @@ function readModernBoard(attrs, ageMinutes) {
   });
 }
 
-/** Read the flat `departure_N_*` attributes written by v0.2. */
-function readLegacyBoard(attrs) {
-  const rows = [];
-  for (let index = 1; ; index += 1) {
-    const prefix = `departure_${index}`;
-    const scheduled = attrs[`${prefix}_scheduled_time`];
-    const expected = attrs[`${prefix}_actual_time`];
-    const destination = attrs[`${prefix}_headsign`];
-    const route = attrs[`${prefix}_route`];
-    if (!scheduled && !expected && !destination && !route) break;
-
-    const delayRaw = attrs[`${prefix}_delay_in_seconds`];
-    const delaySeconds = typeof delayRaw === 'number' ? delayRaw : undefined;
-    const minutes = minutesUntilClockTime(expected || scheduled);
-    rows.push({
-      route: route || '',
-      routeId: route || '',
-      destination: destination || '',
-      scheduled: scheduled || null,
-      expected: expected || scheduled || null,
-      delaySeconds,
-      minutes,
-      platform: null,
-      status: statusFromDelay(delaySeconds, minutes),
-      realtime: delaySeconds !== undefined,
-      color: undefined,
-      textColor: undefined,
-      mode: attrs.transport_type || 'unknown',
-      occupancy: null,
-      vehicle: attrs[`${prefix}_license_plate`] || null,
-      tripId: attrs[`${prefix}_trip_id`] || null,
-      boarding: true,
-      reason: null,
-      alternative: null,
-      alertEffect: null,
-      alertSeverity: null,
-    });
-  }
-  return rows;
-}
-
-/** Read the v0.3 `alerts` array, falling back to v0.2's `alert_N_*` keys. */
+/** Read the `alerts` array from the integration. */
 function readAlerts(attrs) {
-  if (Array.isArray(attrs.alerts)) {
-    return attrs.alerts.map((alert) => ({
-      header: alert.header || '',
-      description: alert.description || '',
-      detail: alert.detail || '',
-      cause: alert.cause || '',
-      effect: alert.effect || '',
-      severity: alert.severity || 'INFO',
-      routes: Array.isArray(alert.routes) ? alert.routes : [],
-    }));
+  if (!Array.isArray(attrs.alerts)) {
+    return [];
   }
 
-  const count = Number(attrs.service_alerts_count) || 0;
-  const alerts = [];
-  for (let index = 1; index <= count; index += 1) {
-    const prefix = `alert_${index}`;
-    if (!attrs[`${prefix}_header`] && !attrs[`${prefix}_description`]) continue;
-    alerts.push({
-      header: attrs[`${prefix}_header`] || '',
-      description: attrs[`${prefix}_description`] || '',
-      detail: attrs[`${prefix}_resolved_by`] || '',
-      cause: attrs[`${prefix}_cause`] || '',
-      effect: attrs[`${prefix}_effect`] || '',
-      severity: attrs[`${prefix}_status`] || 'INFO',
-      routes: String(attrs[`${prefix}_affected_routes`] || '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean),
-    });
-  }
-  return alerts;
+  return attrs.alerts.map((alert) => ({
+    header: alert.header || '',
+    description: alert.description || '',
+    detail: alert.detail || '',
+    cause: alert.cause || '',
+    effect: alert.effect || '',
+    severity: alert.severity || 'INFO',
+    routes: Array.isArray(alert.routes) ? alert.routes : [],
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -324,13 +248,6 @@ const CARD_STYLES = `
     font-size: 12px; color: var(--secondary-text-color);
     margin-top: 2px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .legacy-hint {
-    display: flex; gap: 6px; align-items: center;
-    margin: 4px 0 8px; padding: 6px 8px;
-    font-size: 12px; border-radius: 6px;
-    background: var(--secondary-background-color);
-    color: var(--secondary-text-color);
   }
 
   /* Alerts */
@@ -421,7 +338,7 @@ const CARD_STYLES = `
   .why ha-icon { --mdc-icon-size: 15px; width: 15px; height: 15px; flex: 0 0 auto; }
   .why .alt { color: var(--secondary-text-color); display: block; margin-top: 2px; }
 
-  /* Table layout (v0.2 look) */
+  /* Table layout (classic view) */
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th { text-align: left; padding: 10px 8px; font-weight: 600; }
   td { padding: 8px; }
@@ -484,7 +401,6 @@ class AucklandTransportCard extends HTMLElement {
   setConfig(config) {
     if (!config || !config.entity) throw new Error('An "entity" is required');
     this._config = { ...DEFAULTS, ...config };
-    // v0.2 used max_alerts implicitly; keep numbers sane.
     this._config.max_alerts = Math.max(0, Number(this._config.max_alerts) || 0);
     this._mapKey = undefined;
     this._built = false;
@@ -539,18 +455,16 @@ class AucklandTransportCard extends HTMLElement {
     const state = this._stateObj();
     if (!state) return undefined;
     const attrs = state.attributes || {};
-    const modern = Number(attrs.schema_version) >= 2 && Array.isArray(attrs.departures);
 
     // Compensate for the time since the integration last refreshed so the
     // countdown stays accurate between polls.
     const updated = state.last_updated ? new Date(state.last_updated) : new Date();
     const ageMinutes = Math.max(0, Math.floor((Date.now() - updated.getTime()) / 60000));
 
-    let departures = modern ? readModernBoard(attrs, ageMinutes) : readLegacyBoard(attrs);
+    let departures = readBoard(attrs, ageMinutes);
     departures = this._applyFilter(departures);
 
     return {
-      modern,
       attrs,
       state,
       stopName: attrs.stop_name || '',
@@ -664,7 +578,6 @@ class AucklandTransportCard extends HTMLElement {
       <ha-card>
         <div class="wrap">
           <div class="header" id="header"></div>
-          <div id="hint"></div>
           <div id="alerts"></div>
           <div id="map"></div>
           <div id="board"></div>
@@ -685,7 +598,6 @@ class AucklandTransportCard extends HTMLElement {
 
     if (!board) {
       root.getElementById('header').innerHTML = this._headerHtml(undefined);
-      root.getElementById('hint').innerHTML = '';
       root.getElementById('alerts').innerHTML = '';
       root.getElementById('board').innerHTML =
         `<div class="empty">Entity <code>${esc(this._config.entity)}</code> not found.</div>`;
@@ -694,7 +606,6 @@ class AucklandTransportCard extends HTMLElement {
     }
 
     root.getElementById('header').innerHTML = this._headerHtml(board);
-    root.getElementById('hint').innerHTML = this._hintHtml(board);
     root.getElementById('alerts').innerHTML = this._alertsHtml(board);
     root.getElementById('board').innerHTML =
       this._config.layout === 'table' ? this._tableHtml(board) : this._rowsHtml(board);
@@ -745,18 +656,6 @@ class AucklandTransportCard extends HTMLElement {
       );
     }
     return parts.join('');
-  }
-
-  _hintHtml(board) {
-    if (board.modern || board.departures.length === 0) return '';
-    return `
-      <div class="legacy-hint">
-        <ha-icon icon="mdi:information-outline"></ha-icon>
-        <span>Reading the older attribute format. Update the Auckland Transport
-        integration to 0.3 or newer for platforms, live occupancy and cancellation
-        details.</span>
-      </div>
-    `;
   }
 
   _alertsHtml(board) {
@@ -1005,7 +904,13 @@ class AucklandTransportCard extends HTMLElement {
     let entityId;
     let info;
     let warn = false;
-    if (tracking && (sameTrip || !first)) {
+    
+    // If the vehicle doesn't match the displayed departures, just show the stop with no message
+    if (tracking && !sameTrip && first) {
+      entityId = this._config.entity;
+      info = '';
+      warn = false;
+    } else if (tracking && (sameTrip || !first)) {
       entityId = vehicle.entity_id;
       const bits = [];
       if (vehicle.attributes.route) bits.push(`Route ${vehicle.attributes.route}`);
@@ -1013,10 +918,6 @@ class AucklandTransportCard extends HTMLElement {
       if (vehicle.attributes.license_plate) bits.push(vehicle.attributes.license_plate);
       if (vehicle.attributes.occupancy) bits.push(String(vehicle.attributes.occupancy).replace(/_/g, ' '));
       info = bits.length ? `Tracking ${bits.join(' · ')}` : 'Tracking vehicle';
-    } else if (tracking) {
-      entityId = vehicle.entity_id;
-      info = `Live vehicle is on a different trip than ${first.route} to ${first.destination}`;
-      warn = true;
     } else {
       entityId = this._config.entity;
       info = first
