@@ -64,15 +64,13 @@
           "departure_sensors": "Individual departure sensors",
           "hide_arrivals": "Hide services that only drop off",
           "include_school_buses": "Include school buses",
-          "only_active_alerts": "Only show currently active alerts",
-          "legacy_attributes": "Emit legacy card attributes"
+          "only_active_alerts": "Only show currently active alerts"
         },
         "data_description": {
           "departure_sensors": "Creates sensor.…_departure_1 through _departure_N, each holding the full detail of one departure. Set to 0 to disable.",
           "hide_arrivals": "Some trips terminate at your stop and cannot be boarded.",
           "include_school_buses": "School routes are the S-prefixed services.",
-          "only_active_alerts": "Auckland Transport publishes alerts weeks in advance; turning this off shows those too.",
-          "legacy_attributes": "Keeps the flat departure_1_* attributes that version 0.2 of the Lovelace card reads. Leave on unless you have upgraded the card."
+          "only_active_alerts": "Auckland Transport publishes alerts weeks in advance; turning this off shows those too."
         }
       }
     }
