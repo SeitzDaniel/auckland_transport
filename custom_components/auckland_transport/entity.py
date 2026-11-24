@@ -25,9 +25,7 @@ class ATEntity(CoordinatorEntity[StopCoordinator]):
         stop = coordinator.data.stop if coordinator.data else None
         stop_name = stop.stop_name if stop else self._stop_id
         stop_code = stop.stop_code if stop else ""
-        # The device name drives the entity_id prefix. Keeping it as
-        # "Auckland Transport <stop>" reproduces the entity ids the v0.2 release
-        # created, so existing dashboards and the v0.2 card keep working.
+        # The device name drives the entity_id prefix.
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self._stop_id)},
             name=f"Auckland Transport {stop_name}",
