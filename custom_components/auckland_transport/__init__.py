@@ -128,20 +128,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unloaded
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate older config entries forward."""
-    if entry.version >= 2:
-        return True
 
-    # v1 entries only stored api_key, stop_type and stop_id. The stop id format is
-    # unchanged, so all that is needed is filling in the newer optional keys.
-    data = {**entry.data}
-    data.setdefault(CONF_STOP_TYPE, STOP_TYPE_ALL)
-    data.setdefault(CONF_STOP_NAME, "")
-    data.setdefault(CONF_STOP_CODE, "")
-    hass.config_entries.async_update_entry(entry, data=data, version=2)
-    _LOGGER.debug("Migrated %s to config entry version 2", entry.title)
-    return True
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
