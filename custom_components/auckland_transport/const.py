@@ -17,8 +17,6 @@ CONF_STOP_CODE: Final = "stop_code"
 
 # Number of individual ``departure_N`` sensor entities to create.
 CONF_DEPARTURE_SENSORS: Final = "departure_sensors"
-# Emit the flat ``departure_N_*`` attributes the v0.2 card expects.
-CONF_LEGACY_ATTRIBUTES: Final = "legacy_attributes"
 # Hide services that only drop off (``pickup_type == 1``).
 CONF_HIDE_ARRIVALS: Final = "hide_arrivals"
 # Include school-bus routes (``route_type`` 712).
@@ -27,7 +25,6 @@ CONF_INCLUDE_SCHOOL_BUSES: Final = "include_school_buses"
 CONF_ONLY_ACTIVE_ALERTS: Final = "only_active_alerts"
 
 DEFAULT_DEPARTURE_SENSORS: Final = 3
-DEFAULT_LEGACY_ATTRIBUTES: Final = True
 DEFAULT_HIDE_ARRIVALS: Final = False
 DEFAULT_INCLUDE_SCHOOL_BUSES: Final = True
 DEFAULT_ONLY_ACTIVE_ALERTS: Final = True
@@ -45,11 +42,6 @@ UPDATE_INTERVAL: Final = 60
 BOARD_DEPARTURE_LIMIT: Final = 40
 
 MAX_DEPARTURE_SENSORS: Final = 20
-
-# Number of legacy ``departure_N_*`` attribute groups emitted for the old card.
-LEGACY_ATTR_DEPARTURES: Final = 4
-# Number of legacy ``alert_N_*`` attribute groups emitted for the old card.
-LEGACY_ATTR_ALERTS: Final = 3
 
 # ---------------------------------------------------------------------------
 # API
@@ -195,8 +187,7 @@ ATTR_DEPARTURES: Final = "departures"
 ATTR_ALERTS: Final = "alerts"
 ATTR_SCHEMA_VERSION: Final = "schema_version"
 
-# Bumped whenever the shape of ``departures`` / ``alerts`` changes so the card can
-# adapt. The card treats "no schema_version" as the old flat-attribute layout.
+# Bumped whenever the shape of ``departures`` / ``alerts`` changes so the card can adapt.
 SCHEMA_VERSION: Final = 2
 
 # ---------------------------------------------------------------------------
@@ -207,6 +198,6 @@ JSMODULES: Final = [
     {
         "name": "Auckland Transport Card",
         "filename": "auckland-transport-card.js",
-        "version": "0.4.0",
+        "version": "0.4.1",
     }
 ]
